@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
+    <!-- Matches Apple Music for Windows' own Microsoft Store requirement (Windows 11 26100.0+,
+         x64/ARM64) — there is no reason to support OS versions Apple Music cannot run on. -->
+    <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <RootNamespace>WindowsLosslessSwitcher</RootNamespace>
+    <AssemblyName>WindowsLosslessSwitcher</AssemblyName>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationIcon>Assets\WLS.ico</ApplicationIcon>
+    <StartupObject>WindowsLosslessSwitcher.Program</StartupObject>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <WlsAppVersion Condition="'$(APP_VERSION)' != ''">$(APP_VERSION)</WlsAppVersion>
+    <WlsAppVersion Condition="'$(WlsAppVersion)' == ''">0.1.0</WlsAppVersion>
+    <WlsAssemblyVersion Condition="'$(ASSEMBLY_VERSION)' != ''">$(ASSEMBLY_VERSION)</WlsAssemblyVersion>
+    <WlsAssemblyVersion Condition="'$(WlsAssemblyVersion)' == ''">0.1.0.0</WlsAssemblyVersion>
+    <Version>$(WlsAppVersion)</Version>
+    <AssemblyVersion>$(WlsAssemblyVersion)</AssemblyVersion>
+    <FileVersion>$(WlsAssemblyVersion)</FileVersion>
+    <InformationalVersion>$(WlsAppVersion)</InformationalVersion>
+    <WlsGitHubOwner>jordanmgibson</WlsGitHubOwner>
+    <WlsGitHubRepository>WindowsLosslessSwitcher</WlsGitHubRepository>
+    <WlsGitHubRepositoryUrl>https://github.com/$(WlsGitHubOwner)/$(WlsGitHubRepository)</WlsGitHubRepositoryUrl>
+    <Authors>jordanmgibson</Authors>
+    <Company>Windows Lossless Switcher Contributors</Company>
+    <Product>Windows Lossless Switcher</Product>
+    <Description>Tray-first Windows utility that switches the selected playback device format to match Apple Music playback.</Description>
+    <PackageProjectUrl>$(WlsGitHubRepositoryUrl)</PackageProjectUrl>
+    <RepositoryUrl>$(WlsGitHubRepositoryUrl)</RepositoryUrl>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="TagLibSharp" Version="2.3.0" />
+    <PackageReference Include="Velopack" Version="0.0.1298" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>WlsGitHubOwner</_Parameter1>
+      <_Parameter2>$(WlsGitHubOwner)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>WlsGitHubRepository</_Parameter1>
+      <_Parameter2>$(WlsGitHubRepository)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Resource Include="Assets\WLS.ico" />
+  </ItemGroup>
+</Project>

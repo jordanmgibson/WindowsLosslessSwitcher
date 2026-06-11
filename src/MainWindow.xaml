@@ -1,0 +1,227 @@
+<Window x:Class="WindowsLosslessSwitcher.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Windows Lossless Switcher"
+        Icon="Assets/WLS.ico"
+        Width="520"
+        MinHeight="640"
+        ResizeMode="CanMinimize"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterScreen">
+  <Window.Resources>
+    <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    <SolidColorBrush x:Key="PanelBorderBrush" Color="#D0D7DE" />
+  </Window.Resources>
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <TextBlock Grid.Row="0"
+               FontSize="20"
+               FontWeight="SemiBold"
+               Text="Apple Music Auto-Switcher" />
+
+    <TabControl Grid.Row="1" Margin="0,16,0,0">
+      <TabItem Header="Main">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel Margin="0,12,0,0">
+            <StackPanel>
+              <TextBlock Margin="0,0,0,4" Text="Device mode" />
+              <ComboBox ItemsSource="{Binding DeviceModes}"
+                        DisplayMemberPath="DisplayName"
+                        SelectedValuePath="Mode"
+                        SelectedValue="{Binding SelectedMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+            </StackPanel>
+
+            <StackPanel Margin="0,12,0,0">
+              <StackPanel Visibility="{Binding IsSelectedDeviceSelectionVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <DockPanel Margin="0,0,0,8">
+                  <TextBlock DockPanel.Dock="Left"
+                             VerticalAlignment="Center"
+                             Text="Select Device:" />
+                  <Button DockPanel.Dock="Right"
+                          Margin="12,0,0,0"
+                          VerticalAlignment="Center"
+                          Padding="10,4"
+                          Command="{Binding RefreshDevicesCommand}"
+                          Content="Refresh devices" />
+                </DockPanel>
+                <ComboBox DisplayMemberPath="FriendlyName"
+                          SelectedValuePath="Id"
+                          ItemsSource="{Binding Devices}"
+                          SelectedValue="{Binding SelectedDeviceId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+              </StackPanel>
+
+              <Border Margin="0,12,0,0"
+                      Padding="12"
+                      BorderBrush="{StaticResource PanelBorderBrush}"
+                      BorderThickness="1"
+                      CornerRadius="8">
+                <StackPanel>
+                  <TextBlock FontWeight="SemiBold"
+                             Text="Detected formats for active target device" />
+                  <TextBlock Margin="0,8,0,0"
+                             Text="{Binding ActiveTargetDeviceNameText}"
+                             TextWrapping="Wrap" />
+                  <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="140" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               FontWeight="SemiBold"
+                               Text="Sample rates" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding SupportedSampleRatesText}"
+                               TextWrapping="Wrap" />
+                  </Grid>
+                  <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="140" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               FontWeight="SemiBold"
+                               Text="Bit depths" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding SupportedBitDepthsText}"
+                               TextWrapping="Wrap" />
+                  </Grid>
+                  <Border Margin="0,10,0,0"
+                          Padding="8"
+                          BorderBrush="{StaticResource PanelBorderBrush}"
+                          BorderThickness="1"
+                          CornerRadius="6">
+                    <StackPanel>
+                      <TextBlock FontWeight="SemiBold" Text="Original audio format" />
+                      <TextBlock Margin="0,4,0,0"
+                                 Text="{Binding OriginalFormatText}"
+                                 TextWrapping="Wrap" />
+                      <Button Margin="0,6,0,0"
+                              HorizontalAlignment="Left"
+                              Padding="10,4"
+                              Command="{Binding RestoreOriginalFormatCommand}"
+                              Content="Restore original format" />
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+
+            <StackPanel Margin="0,16,0,0">
+              <CheckBox IsChecked="{Binding LaunchAtLogin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        Content="Launch at login" />
+              <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <CheckBox Grid.Column="0"
+                          VerticalAlignment="Center"
+                          IsChecked="{Binding SwitchBitDepth, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          Content="Switch bit depth as well as sample rate" />
+                <StackPanel Grid.Column="1"
+                            Margin="12,0,0,0"
+                            Orientation="Horizontal">
+                  <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                      <Setter Property="Visibility" Value="Collapsed" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding UseFixedBitDepthSelection}" Value="True">
+                          <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </StackPanel.Style>
+                  <TextBlock Margin="0,0,8,0"
+                             VerticalAlignment="Center"
+                             Text="Default bit depth" />
+                  <ComboBox Width="88"
+                            ItemsSource="{Binding DefaultBitDepthOptions}"
+                            SelectedItem="{Binding DefaultBitDepth, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding StringFormat={}{0}-bit}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+              </Grid>
+              <CheckBox Margin="0,8,0,0"
+                        IsChecked="{Binding PreferClosestSampleRateMultiple, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        Content="Prefer closest sample rate multiple" />
+              <CheckBox Margin="0,8,0,0"
+                        IsChecked="{Binding EnableSwitchToasts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        Content="Show bottom-right popup when format changes" />
+              <CheckBox Margin="24,8,0,0"
+                        Visibility="{Binding IsSwitchToastMetadataOptionVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        IsChecked="{Binding IncludeTrackMetadataInSwitchToasts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        Content="Include song, artist, and album in popup" />
+            </StackPanel>
+
+            <Border Margin="0,16,0,0"
+                    Padding="12"
+                    BorderBrush="{StaticResource PanelBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+              <StackPanel>
+                <TextBlock FontWeight="SemiBold" Text="Current status" />
+                <TextBlock Margin="0,8,0,0" Text="{Binding ResolverStatusText}" />
+                <TextBlock Margin="0,8,0,0" Text="{Binding CurrentTrackText}" TextWrapping="Wrap" />
+                <TextBlock Margin="0,8,0,0" Text="{Binding RequestedFormatText}" />
+                <TextBlock Margin="0,8,0,0" Text="{Binding AppliedFormatText}" />
+                <TextBlock Margin="0,8,0,0" Text="{Binding FailureReasonText}" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Updates">
+        <Border Margin="0,12,0,0"
+                Padding="12"
+                BorderBrush="{StaticResource PanelBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+          <StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="App updates" />
+            <TextBlock Margin="0,8,0,0" Text="{Binding AppVersionText}" />
+            <TextBlock Margin="0,8,0,0" Text="{Binding UpdateStatusText}" TextWrapping="Wrap" />
+            <WrapPanel Margin="0,12,0,0">
+              <Button Padding="12,6"
+                      Margin="0,0,8,8"
+                      Command="{Binding CheckForUpdatesCommand}"
+                      Content="Check for updates" />
+              <Button Padding="12,6"
+                      Margin="0,0,8,8"
+                      Visibility="{Binding HasUpdatePrimaryAction, Converter={StaticResource BooleanToVisibilityConverter}}"
+                      Command="{Binding RunUpdatePrimaryActionCommand}"
+                      Content="{Binding UpdatePrimaryActionText}" />
+              <Button Padding="12,6"
+                      Margin="0,0,8,8"
+                      Command="{Binding OpenReleasesPageCommand}"
+                      Content="Open releases" />
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+      </TabItem>
+    </TabControl>
+
+    <StackPanel Grid.Row="2"
+                Margin="0,16,0,0"
+                HorizontalAlignment="Right"
+                Orientation="Horizontal">
+      <Button Padding="12,6"
+              Margin="0,0,8,0"
+              Command="{Binding ExportDiagnosticsCommand}"
+              Content="Export diagnostics" />
+      <Button Padding="12,6" IsCancel="True" Content="Hide" Click="HideButton_OnClick" />
+    </StackPanel>
+  </Grid>
+</Window>

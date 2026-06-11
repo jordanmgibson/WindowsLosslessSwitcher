@@ -1,0 +1,204 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      assembly_version: ${{ steps.version.outputs.assembly_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.1.0' }
+          $versionCore = $version.Split('-', 2)[0]
+          $parts = $versionCore.Split('.')
+          if ($parts.Count -eq 3) {
+            $assemblyVersion = "$versionCore.0"
+          } elseif ($parts.Count -eq 4) {
+            $assemblyVersion = $versionCore
+          } else {
+            throw "Unsupported version format: $version"
+          }
+          "app_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "assembly_version=$assemblyVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Restore
+        run: dotnet restore .\WindowsLosslessSwitcher.sln
+
+      - name: Build
+        env:
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          ASSEMBLY_VERSION: ${{ steps.version.outputs.assembly_version }}
+        run: dotnet build .\WindowsLosslessSwitcher.sln --configuration Release --no-restore
+
+      - name: Test
+        env:
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          ASSEMBLY_VERSION: ${{ steps.version.outputs.assembly_version }}
+        run: dotnet test .\WindowsLosslessSwitcher.sln --configuration Release --no-build --verbosity normal
+
+  package:
+    needs: validate
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - runtime: win-x64
+            channel: win-x64
+          - runtime: win-arm64
+            channel: win-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Velopack CLI
+        run: dotnet tool install --tool-path .tools vpk --version 0.0.1298
+
+      - name: Restore runtime
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.app_version }}
+          ASSEMBLY_VERSION: ${{ needs.validate.outputs.assembly_version }}
+        run: dotnet restore .\src\WindowsLosslessSwitcher.csproj --runtime ${{ matrix.runtime }}
+
+      - name: Publish runtime
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.app_version }}
+          ASSEMBLY_VERSION: ${{ needs.validate.outputs.assembly_version }}
+        run: dotnet publish .\src\WindowsLosslessSwitcher.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --no-restore --output .\artifacts\publish\${{ matrix.runtime }}
+
+      - name: Download previous channel releases
+        run: >
+          .\.tools\vpk download github
+          --repoUrl "${{ github.server_url }}/${{ github.repository }}"
+          --token "${{ secrets.GITHUB_TOKEN }}"
+          --channel ${{ matrix.channel }}
+          --outputDir .\artifacts\releases\${{ matrix.channel }}
+          ${{ contains(needs.validate.outputs.app_version, '-') && '--pre' || '' }}
+        continue-on-error: true
+
+      - name: Pack channel installer/update packages
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.app_version }}
+        run: >
+          .\.tools\vpk pack
+          --packId WindowsLosslessSwitcher
+          --packVersion ${{ needs.validate.outputs.app_version }}
+          --packDir .\artifacts\publish\${{ matrix.runtime }}
+          --runtime ${{ matrix.runtime }}
+          --channel ${{ matrix.channel }}
+          --outputDir .\artifacts\releases\${{ matrix.channel }}
+          --packAuthors "Windows Lossless Switcher Contributors"
+          --packTitle "Windows Lossless Switcher"
+          --mainExe WindowsLosslessSwitcher.exe
+          --icon .\src\Assets\WLS.ico
+
+      - name: Verify packaged assets
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.app_version }}
+        run: |
+          $basePath = ".\artifacts\releases\${{ matrix.channel }}"
+          $requiredFiles = @(
+            "assets.${{ matrix.channel }}.json",
+            "RELEASES-${{ matrix.channel }}",
+            "WindowsLosslessSwitcher-${env:APP_VERSION}-${{ matrix.channel }}-full.nupkg",
+            "WindowsLosslessSwitcher-${{ matrix.channel }}-Portable.zip",
+            "WindowsLosslessSwitcher-${{ matrix.channel }}-Setup.exe"
+          )
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path (Join-Path $basePath $file))) {
+              throw "Expected packaged asset was not produced: $file"
+            }
+          }
+
+      - name: Upload packaged channel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: velopack-${{ matrix.channel }}
+          path: .\artifacts\releases\${{ matrix.channel }}\*
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - validate
+      - package
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Velopack CLI
+        run: dotnet tool install --tool-path .tools vpk --version 0.0.1298
+
+      - name: Download win-x64 packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          name: velopack-win-x64
+          path: .\artifacts\releases\win-x64
+
+      - name: Download win-arm64 packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          name: velopack-win-arm64
+          path: .\artifacts\releases\win-arm64
+
+      - name: Upload win-x64 Velopack assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          .\.tools\vpk upload github
+          --repoUrl "${{ github.server_url }}/${{ github.repository }}"
+          --token "${{ secrets.GITHUB_TOKEN }}"
+          --channel win-x64
+          --outputDir .\artifacts\releases\win-x64
+          --publish
+          --releaseName "Windows Lossless Switcher v${{ needs.validate.outputs.app_version }}"
+          --tag "v${{ needs.validate.outputs.app_version }}"
+          ${{ contains(needs.validate.outputs.app_version, '-') && '--pre' || '' }}
+
+      - name: Upload win-arm64 Velopack assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          .\.tools\vpk upload github
+          --repoUrl "${{ github.server_url }}/${{ github.repository }}"
+          --token "${{ secrets.GITHUB_TOKEN }}"
+          --channel win-arm64
+          --outputDir .\artifacts\releases\win-arm64
+          --merge
+          --publish
+          --releaseName "Windows Lossless Switcher v${{ needs.validate.outputs.app_version }}"
+          --tag "v${{ needs.validate.outputs.app_version }}"
+          ${{ contains(needs.validate.outputs.app_version, '-') && '--pre' || '' }}

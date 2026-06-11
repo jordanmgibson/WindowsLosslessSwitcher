@@ -1,0 +1,30 @@
+# Build outputs
+bin/
+obj/
+TestResults/
+artifacts/
+docs/
+
+# Local scratch and verification output
+.tmp/
+.tools/
+
+# IDE and OS files
+.vs/
+*.user
+*.suo
+*.rsuser
+*.userosscache
+Thumbs.db
+Desktop.ini
+
+# Logs and diagnostics
+*.log
+
+# Publish and package output
+releases/
+dist/
+packages/
+
+# NuGet locals
+*.nupkg
