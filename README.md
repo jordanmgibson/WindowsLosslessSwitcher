@@ -49,7 +49,14 @@ Worth knowing:
 - Apple Music for Windows (Microsoft Store version 1.1540.23042.0 or higher), with High-Res Lossless enabled in its audio quality settings
 - An audio device where the shared-mode format matters to you — typically an external DAC, AVR, or USB audio interface
 
-For the best experience, set both the Windows volume and Apple Music's own volume slider to maximum, and turn off any device enhancements in the Windows sound settings (audio enhancements, spatial sound) and in your device driver's control panel. Apple Music on Windows has no exclusive mode; full volume and a clean effects path through the shared-mode mixer is what comes closest to emulating one.
+### Getting the cleanest output
+
+Apple Music on Windows has no exclusive mode. A clean path through the shared-mode mixer at full volume is what comes closest to one — the nearest equivalent to the exclusive modes in Amazon Music or Tidal. Unless you are deliberately using software EQ (such as Equalizer APO), set up the following once:
+
+- Set the volume to 100% in three places: Apple Music's own volume slider, the system volume, and Apple Music in the Volume Mixer (Settings → System → Sound → Volume mixer).
+- Turn off audio enhancements for your DAC/receiver: Settings → System → Sound → select your device under Output → Properties → set Audio enhancements to Off.
+- Also uncheck the legacy enhancements setting, which is separate: Settings → System → Sound → More sound settings → Playback → your DAC/receiver → Properties → Advanced → uncheck "Enable audio enhancements".
+- Turn off spatial sound (same device properties page) and any effects in your device driver's own control panel.
 
 ## How it works
 
