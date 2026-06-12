@@ -14,6 +14,15 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
     // AUMID prefix shared by all Apple Music for Windows package identities.
     private const string AppleMusicAumidPrefix = "AppleInc.AppleMusicWin";
 
+    // On Windows 10, GSMTC attributes Apple Music's session to the bare executable name
+    // instead of the package AUMID it reports on Windows 11 (verified live on 19045).
+    private const string AppleMusicExecutableSessionId = "AppleMusic.exe";
+
+    internal static bool IsAppleMusicSessionId(string? sourceAppUserModelId) =>
+        !string.IsNullOrEmpty(sourceAppUserModelId) &&
+        (sourceAppUserModelId.Contains(AppleMusicAumidPrefix, StringComparison.OrdinalIgnoreCase) ||
+         sourceAppUserModelId.Equals(AppleMusicExecutableSessionId, StringComparison.OrdinalIgnoreCase));
+
     // Apple Music briefly emits "Connecting…" metadata while it resolves the track after a skip
     // or app resume. Debouncing for 2 seconds prevents a spurious format switch when the real
     // track metadata arrives within that window.
@@ -707,7 +716,7 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
             }
 
             var candidate = _manager.GetSessions()
-                .FirstOrDefault(session => session.SourceAppUserModelId.Contains(AppleMusicAumidPrefix, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(session => IsAppleMusicSessionId(session.SourceAppUserModelId));
 
             if (candidate is not null)
             {
@@ -910,7 +919,7 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         GlobalSystemMediaTransportControlsSession? attachedSession)
     {
         var appleMusicSessions = sessions
-            .Where(session => session.SourceAppUserModelId.Contains(AppleMusicAumidPrefix, StringComparison.OrdinalIgnoreCase))
+            .Where(session => IsAppleMusicSessionId(session.SourceAppUserModelId))
             .ToList();
         if (appleMusicSessions.Count == 0)
         {
@@ -932,7 +941,7 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         }
 
         if (currentSession is not null &&
-            currentSession.SourceAppUserModelId.Contains(AppleMusicAumidPrefix, StringComparison.OrdinalIgnoreCase))
+            IsAppleMusicSessionId(currentSession.SourceAppUserModelId))
         {
             return appleMusicSessions.FirstOrDefault(session => ReferenceEquals(session, currentSession)) ??
                    appleMusicSessions.FirstOrDefault(session => session.SourceAppUserModelId == currentSession.SourceAppUserModelId) ??

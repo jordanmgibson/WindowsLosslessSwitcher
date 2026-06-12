@@ -36,6 +36,30 @@ public sealed class AppleMusicTrackSourceTests
         Assert.False(AppleMusicTrackSource.IsPlaceholderTrack(track));
     }
 
+    // ── IsAppleMusicSessionId ────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("AppleInc.AppleMusicWin_nzyj5cx40ttqa!App")] // Windows 11 package AUMID
+    [InlineData("appleinc.applemusicwin_nzyj5cx40ttqa!App")]
+    [InlineData("AppleMusic.exe")] // Windows 10 reports the bare executable name (seen on 19045)
+    [InlineData("applemusic.exe")]
+    public void IsAppleMusicSessionId_MatchesAppleMusicSessions(string sourceAppUserModelId)
+    {
+        Assert.True(AppleMusicTrackSource.IsAppleMusicSessionId(sourceAppUserModelId));
+    }
+
+    [Theory]
+    [InlineData("Spotify.exe")]
+    [InlineData("Chrome")]
+    [InlineData("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic")]
+    [InlineData("NotAppleMusic.exe")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void IsAppleMusicSessionId_RejectsOtherSessions(string? sourceAppUserModelId)
+    {
+        Assert.False(AppleMusicTrackSource.IsAppleMusicSessionId(sourceAppUserModelId));
+    }
+
     // ── HandleSnapshot: real tracks ──────────────────────────────────────────
 
     [Fact]
