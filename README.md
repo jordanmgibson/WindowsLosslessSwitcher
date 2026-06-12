@@ -45,7 +45,7 @@ Worth knowing:
 
 ## Requirements
 
-- Windows 11 version 24H2 (build 26100) or later, x64 or ARM64 — the same floor as Apple Music for Windows itself
+- Windows 11, x64 or ARM64. Windows 10 (version 2004 / build 19041 or later) is experimental — Apple Music itself runs there despite its Store listing, and Windows 10 support is currently being validated with community testers
 - Apple Music for Windows (Microsoft Store version 1.1540.23042.0 or higher), with High-Res Lossless enabled in its audio quality settings
 - An audio device where the shared-mode format matters to you — typically an external DAC, AVR, or USB audio interface
 

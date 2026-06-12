@@ -24,9 +24,16 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
     // during a transient blip.
     private static readonly TimeSpan SessionLossDebounce = TimeSpan.FromSeconds(3);
 
+    // While no Apple Music session is attached, re-enumerate sessions on a slow cadence instead
+    // of relying solely on SessionsChanged. Event delivery is not guaranteed on every OS build
+    // (Windows 10 in particular is unverified), and the periodic census lines this produces in
+    // the diagnostics log show whether Apple Music's session is visible at all.
+    private static readonly TimeSpan UnattachedRepollInterval = TimeSpan.FromSeconds(30);
+
     private readonly DiagnosticsLogger _logger;
     private readonly TimeSpan _placeholderDebounce;
     private readonly TimeSpan _sessionLossDebounce;
+    private readonly CancellationTokenSource _repollCts = new();
     private readonly object _sessionStateSync = new();
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
     private GlobalSystemMediaTransportControlsSession? _attachedSession;
@@ -57,15 +64,54 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+        try
+        {
+            _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+        }
+        catch (Exception ex)
+        {
+            // Without the session manager the app can still run (and switch manually); throwing
+            // here would take down WPF startup. The log line is the diagnostic that matters.
+            _logger.Error("Global media session manager is unavailable; track detection is disabled.", ex);
+            return;
+        }
+
         _manager.SessionsChanged += OnSessionsChanged;
         _manager.CurrentSessionChanged += OnCurrentSessionChanged;
         await RefreshAttachedSessionAsync();
+        _ = RepollWhileUnattachedAsync(_repollCts.Token);
         _logger.Info("Apple Music track source started.");
+    }
+
+    private async Task RepollWhileUnattachedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(UnattachedRepollInterval, cancellationToken);
+                if (_attachedSession is not null)
+                {
+                    continue;
+                }
+
+                _logger.Info("No Apple Music session attached; re-enumerating GSMTC sessions.");
+                await RefreshAttachedSessionAsync();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"GSMTC re-poll loop stopped unexpectedly: {ex.Message}");
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
+        _repollCts.Cancel();
+        _repollCts.Dispose();
         CancelSessionLossDebounce();
         CancelPlaceholderPublish();
         await DetachSessionAsync();

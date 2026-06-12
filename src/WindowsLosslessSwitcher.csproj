@@ -1,10 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
-    <!-- Matches Apple Music for Windows' own Microsoft Store requirement (Windows 11 26100.0+,
-         x64/ARM64) — there is no reason to support OS versions Apple Music cannot run on. -->
-    <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <!-- The real API floor is Windows 10 1809 (17763): every WinRT API used (Windows.Media.Control
+         GSMTC, Windows.Storage.Streams) shipped there, and the audio switching path is Vista-era
+         COM. 19041 is the lowest still-serviced Windows 10 baseline (2004+ covers 22H2). Apple
+         Music's Store listing claims Windows 11 24H2, but it installs and plays on Windows 10. -->
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

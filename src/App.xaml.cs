@@ -53,6 +53,7 @@ public partial class App : Application
         }
 
         _logger.Info("Startup ownership: primary instance.");
+        _logger.Info($"OS version: {Environment.OSVersion.Version} ({(Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit")}, {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}).");
 
         _settings = _settingsService.Load();
         _viewModel.SelectedMode = _settings.DeviceSelectionMode;
