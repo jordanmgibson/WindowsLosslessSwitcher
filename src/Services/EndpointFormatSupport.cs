@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
@@ -10,7 +11,15 @@ namespace WindowsLosslessSwitcher.Services;
 internal enum EndpointFormatKind
 {
     WaveFormatEx,
+
+    // PCM extensible with valid bits equal to the container size (e.g. 24-in-24).
     WaveFormatExtensible,
+
+    // PCM extensible with fewer valid bits than the container (e.g. 24-in-32). USB Audio
+    // Class 2 devices typically expose 24-bit audio only in this shape.
+    WaveFormatExtensiblePadded,
+
+    WaveFormatExtensibleIeeeFloat,
 }
 
 internal enum EndpointFormatOrigin
@@ -51,6 +60,12 @@ internal static class EndpointFormatSupport
     private static readonly MethodInfo? GetBlobMethod = typeof(PropVariant).GetMethod(
         "GetBlob",
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    private static readonly FieldInfo? ValidBitsPerSampleField = typeof(WaveFormatExtensible).GetField(
+        "wValidBitsPerSample",
+        BindingFlags.Instance | BindingFlags.NonPublic);
+
+    private static readonly Guid KsDataFormatSubTypePcm = new("00000001-0000-0010-8000-00AA00389B71");
+    private static readonly Guid KsDataFormatSubTypeIeeeFloat = new("00000003-0000-0010-8000-00AA00389B71");
 
     public static EndpointFormatDescriptor? TryReadPropertyStoreDeviceFormat(MMDevice device)
     {
@@ -92,21 +107,8 @@ internal static class EndpointFormatSupport
             return null;
         }
 
-        var pointer = Marshal.AllocHGlobal(blob.Length);
-        try
-        {
-            Marshal.Copy(blob, 0, pointer, blob.Length);
-            var waveFormat = WaveFormat.MarshalFromPtr(pointer);
-            return CreateDescriptor(waveFormat, origin);
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(pointer);
-        }
+        var waveFormat = TryMarshalWaveFormat(blob);
+        return waveFormat is null ? null : CreateDescriptor(waveFormat, origin);
     }
 
     public static byte[] SerializeWaveFormat(WaveFormat waveFormat)
@@ -167,18 +169,79 @@ internal static class EndpointFormatSupport
         if (channels <= 2)
         {
             yield return new WaveFormat(sampleRate, bitDepth, channels);
-            yield return new WaveFormatExtensible(sampleRate, bitDepth, channels);
-            yield break;
         }
 
         yield return new WaveFormatExtensible(sampleRate, bitDepth, channels);
+
+        // USB Audio Class 2 devices commonly accept 24-bit audio only as 24 valid bits in a
+        // 32-bit container, and 32-bit only as integer PCM. NAudio's extensible constructor
+        // can express neither shape: it ties valid bits to the container size and forces
+        // IEEE float at 32 bits.
+        if (bitDepth == 24)
+        {
+            yield return CreatePcmExtensibleFormat(sampleRate, validBits: 24, containerBits: 32, channels);
+        }
+        else if (bitDepth == 32)
+        {
+            yield return CreatePcmExtensibleFormat(sampleRate, validBits: 32, containerBits: 32, channels);
+        }
+    }
+
+    public static WaveFormat CreatePcmExtensibleFormat(int sampleRate, int validBits, int containerBits, int channels)
+    {
+        var blockAlign = channels * containerBits / 8;
+        var blob = new byte[40];
+        BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(0), 0xFFFE); // WAVE_FORMAT_EXTENSIBLE
+        BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(2), (ushort)channels);
+        BinaryPrimitives.WriteUInt32LittleEndian(blob.AsSpan(4), (uint)sampleRate);
+        BinaryPrimitives.WriteUInt32LittleEndian(blob.AsSpan(8), (uint)(sampleRate * blockAlign));
+        BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(12), (ushort)blockAlign);
+        BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(14), (ushort)containerBits);
+        BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(16), 22); // cbSize
+        BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(18), (ushort)validBits);
+        BinaryPrimitives.WriteUInt32LittleEndian(blob.AsSpan(20), (uint)((1 << channels) - 1)); // dwChannelMask
+        KsDataFormatSubTypePcm.TryWriteBytes(blob.AsSpan(24));
+
+        return TryMarshalWaveFormat(blob)
+            ?? throw new InvalidOperationException($"Failed to marshal {validBits}-in-{containerBits} extensible format.");
+    }
+
+    public static int GetValidBitsPerSample(WaveFormat waveFormat)
+    {
+        if (waveFormat is WaveFormatExtensible extensible &&
+            ValidBitsPerSampleField?.GetValue(extensible) is short validBits &&
+            validBits > 0)
+        {
+            return validBits;
+        }
+
+        // A wValidBitsPerSample of 0 means container-defined; non-extensible formats have no
+        // separate valid-bits field at all.
+        return waveFormat.BitsPerSample;
     }
 
     public static EndpointFormatDescriptor CreateDescriptor(WaveFormat waveFormat, EndpointFormatOrigin origin)
     {
-        var format = new AudioFormatCandidate(waveFormat.SampleRate, waveFormat.BitsPerSample, waveFormat.Channels);
-        var kind = waveFormat is WaveFormatExtensible ? EndpointFormatKind.WaveFormatExtensible : EndpointFormatKind.WaveFormatEx;
-        return new EndpointFormatDescriptor(format, waveFormat, kind, origin);
+        var validBits = GetValidBitsPerSample(waveFormat);
+        var format = new AudioFormatCandidate(waveFormat.SampleRate, validBits, waveFormat.Channels);
+        return new EndpointFormatDescriptor(format, waveFormat, ClassifyKind(waveFormat, validBits), origin);
+    }
+
+    private static EndpointFormatKind ClassifyKind(WaveFormat waveFormat, int validBits)
+    {
+        if (waveFormat is not WaveFormatExtensible extensible)
+        {
+            return EndpointFormatKind.WaveFormatEx;
+        }
+
+        if (extensible.SubFormat == KsDataFormatSubTypeIeeeFloat)
+        {
+            return EndpointFormatKind.WaveFormatExtensibleIeeeFloat;
+        }
+
+        return validBits < waveFormat.BitsPerSample
+            ? EndpointFormatKind.WaveFormatExtensiblePadded
+            : EndpointFormatKind.WaveFormatExtensible;
     }
 
     public static DeviceFormatVerificationResult VerifyTargetFormat(
@@ -271,6 +334,36 @@ internal static class EndpointFormatSupport
         return matches[0];
     }
 
+    public static EndpointFormatDescriptor? SelectContainerBitsFallback(
+        IReadOnlyList<EndpointFormatDescriptor> descriptors,
+        AudioFormatCandidate targetFormat) =>
+        descriptors
+            .Where(descriptor =>
+                descriptor.NativeFormat.SampleRate == targetFormat.SampleRateHz &&
+                descriptor.NativeFormat.Channels == targetFormat.Channels &&
+                descriptor.NativeFormat.BitsPerSample == targetFormat.BitDepth)
+            .OrderBy(descriptor => descriptor.Kind == EndpointFormatKind.WaveFormatExtensiblePadded ? 0 : 1)
+            .ThenBy(GetPreference)
+            .FirstOrDefault();
+
+    private static WaveFormat? TryMarshalWaveFormat(byte[] blob)
+    {
+        var pointer = Marshal.AllocHGlobal(blob.Length);
+        try
+        {
+            Marshal.Copy(blob, 0, pointer, blob.Length);
+            return WaveFormat.MarshalFromPtr(pointer);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pointer);
+        }
+    }
+
     private static void AddOrReplaceDescriptor(
         IList<EndpointFormatDescriptor> descriptors,
         EndpointFormatDescriptor candidate)
@@ -304,7 +397,9 @@ internal static class EndpointFormatSupport
 
     private static int GetWaveFormatSize(WaveFormat waveFormat) => Marshal.SizeOf<WAVEFORMATEX>() + waveFormat.ExtraSize;
 
-    [StructLayout(LayoutKind.Sequential)]
+    // Pack = 2 matches the native mmreg.h layout (18 bytes); the default packing pads the
+    // struct to 20, which overstates blob sizes and rejects valid plain-format blobs.
+    [StructLayout(LayoutKind.Sequential, Pack = 2)]
     private struct WAVEFORMATEX
     {
         public ushort wFormatTag;

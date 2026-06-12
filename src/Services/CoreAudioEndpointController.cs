@@ -80,7 +80,7 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
         {
             using var device = GetDevice(deviceId);
             var mixFormat = device.AudioClient.MixFormat;
-            return new AudioFormatCandidate(mixFormat.SampleRate, mixFormat.BitsPerSample, mixFormat.Channels);
+            return new AudioFormatCandidate(mixFormat.SampleRate, EndpointFormatSupport.GetValidBitsPerSample(mixFormat), mixFormat.Channels);
         }
         catch
         {
@@ -285,8 +285,11 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
 
             beforeFormat = GetCurrentDeviceFormat(deviceId);
             PolicyConfigInterop.SetDeviceFormat(deviceId, descriptor.NativeFormat);
+            // Verify against the descriptor's own candidate: the legacy container-bits fallback
+            // can select a descriptor whose valid-bits depth differs from the requested format,
+            // and the device reports the descriptor's depth afterwards.
             var verification = EndpointFormatSupport.VerifyTargetFormat(
-                format,
+                descriptor.Format,
                 VerificationAttempts,
                 VerificationRetryDelay,
                 () => ReadCurrentDeviceFormatSnapshot(deviceId),
@@ -338,16 +341,26 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
         var lastSuccessfulKind = GetLastSuccessfulKind(deviceId);
         var matches = EndpointFormatSupport.GetMatchingDescriptors(descriptors, format);
         var selected = EndpointFormatSupport.SelectBestDescriptor(descriptors, format, currentPropertyStoreKind, lastSuccessfulKind);
-        var variants = matches.Count == 0
-            ? "none"
-            : string.Join(" | ", matches.Select(match => match.Description));
-        var reason = selected is null
-            ? "no variant matched"
-            : currentPropertyStoreKind is not null && selected.Kind == currentPropertyStoreKind.Value
+        string reason;
+        if (selected is not null)
+        {
+            reason = currentPropertyStoreKind is not null && selected.Kind == currentPropertyStoreKind.Value
                 ? "preferred currentPropertyStoreFamily"
                 : lastSuccessfulKind is not null && selected.Kind == lastSuccessfulKind.Value
                     ? "preferred lastSuccessfulFamily"
                     : "used remaining variant";
+        }
+        else
+        {
+            // Pre-fix OriginalTarget snapshots stored container bits (e.g. 32 on a 24-in-32
+            // device); candidates now carry valid bits, so match those targets by container.
+            selected = EndpointFormatSupport.SelectContainerBitsFallback(descriptors, format);
+            reason = selected is null ? "no variant matched" : "legacyContainerBitsFallback";
+        }
+
+        var variants = matches.Count == 0
+            ? "none"
+            : string.Join(" | ", matches.Select(match => match.Description));
 
         diagnostics =
             $"currentPropertyStoreFamily={(currentPropertyStoreKind?.ToString() ?? "unknown")}, " +
@@ -427,7 +440,10 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
             var policyFormat = PolicyConfigInterop.GetDeviceFormat(deviceId);
             if (policyFormat is not null)
             {
-                policyConfigFormat = new AudioFormatCandidate(policyFormat.SampleRate, policyFormat.BitsPerSample, policyFormat.Channels);
+                policyConfigFormat = new AudioFormatCandidate(
+                    policyFormat.SampleRate,
+                    EndpointFormatSupport.GetValidBitsPerSample(policyFormat),
+                    policyFormat.Channels);
             }
         }
         catch
