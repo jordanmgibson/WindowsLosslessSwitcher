@@ -43,6 +43,12 @@ public interface IAudioEndpointController
     string? GetLastApplyDiagnostics(string deviceId);
 
     /// <summary>
+    /// Returns diagnostics from the last exclusive-mode format probe for the device, including
+    /// which formats were accepted and a tally of any probe errors by HRESULT.
+    /// </summary>
+    string? GetLastProbeDiagnostics(string deviceId);
+
+    /// <summary>
     /// Returns the current master peak value for playback activity checks.
     /// </summary>
     float? GetMasterPeakValue(string deviceId);

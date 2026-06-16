@@ -1063,6 +1063,8 @@ public sealed class SwitchingCoordinatorTests
 
         public string? GetLastApplyDiagnostics(string deviceId) => null;
 
+        public string? GetLastProbeDiagnostics(string deviceId) => null;
+
         public float? GetMasterPeakValue(string deviceId)
         {
             GetMasterPeakValueCallCount++;

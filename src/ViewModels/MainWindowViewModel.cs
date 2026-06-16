@@ -30,6 +30,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string _supportedSampleRatesText = "No supported formats detected.";
     private string _supportedBitDepthsText = "No supported formats detected.";
     private string _supportedFormatsText = "No supported formats detected.";
+    private string _supportedFormatsDiagnosticsText = "-";
     private string _appVersionText = "Version 0.1.0";
     private string _updateStatusText = "Updates are not configured yet.";
     private string? _updatePrimaryActionText;
@@ -221,6 +222,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         set => SetField(ref _supportedFormatsText, value);
     }
 
+    public string SupportedFormatsDiagnosticsText
+    {
+        get => _supportedFormatsDiagnosticsText;
+        set => SetField(ref _supportedFormatsDiagnosticsText, value);
+    }
+
     public string AppVersionText
     {
         get => _appVersionText;
@@ -343,6 +350,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         SupportedSampleRatesText = AudioFormatTextFormatter.BuildSupportedSampleRatesText(snapshot.SupportedFormats);
         SupportedBitDepthsText = AudioFormatTextFormatter.BuildSupportedBitDepthsText(snapshot.SupportedFormats);
         SupportedFormatsText = AudioFormatTextFormatter.BuildSupportedFormatsText(snapshot.SupportedFormats);
+        SupportedFormatsDiagnosticsText = string.IsNullOrWhiteSpace(snapshot.ProbeDiagnostics) ? "-" : snapshot.ProbeDiagnostics;
     }
 
     public void UpdateAppVersion(UpdateStatusSnapshot snapshot)

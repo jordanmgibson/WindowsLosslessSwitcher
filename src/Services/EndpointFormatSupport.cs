@@ -177,19 +177,33 @@ internal static class EndpointFormatSupport
         // 32-bit container, and 32-bit only as integer PCM. NAudio's extensible constructor
         // can express neither shape: it ties valid bits to the container size and forces
         // IEEE float at 32 bits.
+        //
+        // For each manually-built extensible shape we probe both the speaker-position channel
+        // mask and dwChannelMask=0 ("positions unspecified"): some USB-audio firmware/drivers
+        // (observed across FiiO's Thesycon and C-Media stacks) reject the positioned mask for a
+        // plain stereo stream but accept the unspecified one. Duplicates collapse downstream —
+        // AddOrReplaceDescriptor keys on (Format, Kind) — so both masks are probed without
+        // producing duplicate descriptors.
         if (bitDepth == 24)
         {
+            // Build the 24-in-24 (packed-container) shape from the trusted blob writer rather
+            // than relying on NAudio's constructor, so the channel mask is always well-formed.
+            yield return CreatePcmExtensibleFormat(sampleRate, validBits: 24, containerBits: 24, channels);
+            yield return CreatePcmExtensibleFormat(sampleRate, validBits: 24, containerBits: 24, channels, channelMask: 0);
             yield return CreatePcmExtensibleFormat(sampleRate, validBits: 24, containerBits: 32, channels);
+            yield return CreatePcmExtensibleFormat(sampleRate, validBits: 24, containerBits: 32, channels, channelMask: 0);
         }
         else if (bitDepth == 32)
         {
             yield return CreatePcmExtensibleFormat(sampleRate, validBits: 32, containerBits: 32, channels);
+            yield return CreatePcmExtensibleFormat(sampleRate, validBits: 32, containerBits: 32, channels, channelMask: 0);
         }
     }
 
-    public static WaveFormat CreatePcmExtensibleFormat(int sampleRate, int validBits, int containerBits, int channels)
+    public static WaveFormat CreatePcmExtensibleFormat(int sampleRate, int validBits, int containerBits, int channels, int? channelMask = null)
     {
         var blockAlign = channels * containerBits / 8;
+        var mask = channelMask ?? (1 << channels) - 1;
         var blob = new byte[40];
         BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(0), 0xFFFE); // WAVE_FORMAT_EXTENSIBLE
         BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(2), (ushort)channels);
@@ -199,7 +213,7 @@ internal static class EndpointFormatSupport
         BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(14), (ushort)containerBits);
         BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(16), 22); // cbSize
         BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(18), (ushort)validBits);
-        BinaryPrimitives.WriteUInt32LittleEndian(blob.AsSpan(20), (uint)((1 << channels) - 1)); // dwChannelMask
+        BinaryPrimitives.WriteUInt32LittleEndian(blob.AsSpan(20), (uint)mask); // dwChannelMask
         KsDataFormatSubTypePcm.TryWriteBytes(blob.AsSpan(24));
 
         return TryMarshalWaveFormat(blob)

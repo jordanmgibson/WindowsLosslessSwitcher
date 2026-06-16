@@ -17,18 +17,86 @@ public sealed class EndpointFormatSupportTests
         // 24 valid bits in a 32-bit container; without this probe they appear 16-bit-only.
         var formats = EndpointFormatSupport.CreateProbeFormats(48000, 24, 2).ToList();
 
-        var padded = formats.SingleOrDefault(format =>
+        var padded = formats.First(format =>
             EndpointFormatSupport.CreateDescriptor(format, EndpointFormatOrigin.ExclusiveProbe).Kind ==
             EndpointFormatKind.WaveFormatExtensiblePadded);
 
-        Assert.NotNull(padded);
-        var blob = EndpointFormatSupport.SerializeWaveFormat(padded!);
+        var blob = EndpointFormatSupport.SerializeWaveFormat(padded);
         Assert.Equal(40, blob.Length);
         Assert.Equal(0xFFFE, BinaryPrimitives.ReadUInt16LittleEndian(blob.AsSpan(0)));
         Assert.Equal(32, BinaryPrimitives.ReadUInt16LittleEndian(blob.AsSpan(14)));
         Assert.Equal(22, BinaryPrimitives.ReadUInt16LittleEndian(blob.AsSpan(16)));
         Assert.Equal(24, BinaryPrimitives.ReadUInt16LittleEndian(blob.AsSpan(18)));
         Assert.Equal(PcmSubFormat, new Guid(blob.AsSpan(24, 16)));
+    }
+
+    [Fact]
+    public void CreateProbeFormats_24Bit_IncludesExplicit24In24AndZeroChannelMaskVariants()
+    {
+        // Probe both the 24-in-24 (packed-container) and 24-in-32 (padded) shapes, each with the
+        // positioned stereo mask and an unspecified (dwChannelMask=0) variant — some USB-audio
+        // firmware accepts only one mask form for a plain stereo stream.
+        var blobs = EndpointFormatSupport.CreateProbeFormats(48000, 24, 2)
+            .Where(format => format is WaveFormatExtensible)
+            .Select(EndpointFormatSupport.SerializeWaveFormat)
+            .ToList();
+
+        bool HasShape(int containerBits, int channelMask) => blobs.Any(blob =>
+            blob.Length == 40 &&
+            BinaryPrimitives.ReadUInt16LittleEndian(blob.AsSpan(14)) == containerBits &&
+            BinaryPrimitives.ReadUInt16LittleEndian(blob.AsSpan(18)) == 24 &&
+            BinaryPrimitives.ReadUInt32LittleEndian(blob.AsSpan(20)) == channelMask);
+
+        Assert.True(HasShape(containerBits: 24, channelMask: 0x3), "missing 24-in-24 positioned mask");
+        Assert.True(HasShape(containerBits: 24, channelMask: 0), "missing 24-in-24 unspecified mask");
+        Assert.True(HasShape(containerBits: 32, channelMask: 0x3), "missing 24-in-32 positioned mask");
+        Assert.True(HasShape(containerBits: 32, channelMask: 0), "missing 24-in-32 unspecified mask");
+    }
+
+    [Fact]
+    public void BuildSupportedFormats_DeviceAccepting768k_YieldsHighRateCandidates()
+    {
+        // FiiO KA3/KA5/K17/K5 Pro run PCM to 705.6/768 kHz; those rates must be probed and surfaced.
+        static bool IsSupported(WaveFormat format) =>
+            format is WaveFormatExtensible && EndpointFormatSupport.GetValidBitsPerSample(format) == 32;
+
+        var descriptors = EndpointFormatSupport.BuildSupportedFormats(
+            currentDeviceFormat: null,
+            channels: 2,
+            candidateRates: [384000, 705600, 768000],
+            candidateDepths: [16, 24, 32],
+            IsSupported);
+
+        var candidates = descriptors.Select(descriptor => descriptor.Format).Distinct().ToList();
+        Assert.Contains(new AudioFormatCandidate(705600, 32, 2), candidates);
+        Assert.Contains(new AudioFormatCandidate(768000, 32, 2), candidates);
+    }
+
+    [Fact]
+    public void BuildSupportedFormats_DeviceAcceptingZeroChannelMaskOnly_StillDetected()
+    {
+        // A device that rejects the positioned stereo mask but accepts unspecified positions
+        // must still be detected via the zero-mask probe variant.
+        static bool IsSupported(WaveFormat format)
+        {
+            if (format is not WaveFormatExtensible || EndpointFormatSupport.GetValidBitsPerSample(format) != 24)
+            {
+                return false;
+            }
+
+            var blob = EndpointFormatSupport.SerializeWaveFormat(format);
+            return BinaryPrimitives.ReadUInt32LittleEndian(blob.AsSpan(20)) == 0;
+        }
+
+        var descriptors = EndpointFormatSupport.BuildSupportedFormats(
+            currentDeviceFormat: null,
+            channels: 2,
+            candidateRates: [48000],
+            candidateDepths: [24],
+            IsSupported);
+
+        var candidates = descriptors.Select(descriptor => descriptor.Format).Distinct().ToList();
+        Assert.Contains(new AudioFormatCandidate(48000, 24, 2), candidates);
     }
 
     [Fact]

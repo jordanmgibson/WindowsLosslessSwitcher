@@ -185,6 +185,8 @@ public sealed class LocalDeviceMaxResolverTests
 
         public string? GetLastApplyDiagnostics(string deviceId) => null;
 
+        public string? GetLastProbeDiagnostics(string deviceId) => null;
+
         public float? GetMasterPeakValue(string deviceId) => null;
 
         public float? GetProcessSessionPeak(string deviceId, string processName) => null;

@@ -298,9 +298,17 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             return new CurrentTargetDeviceCapabilitiesSnapshot(null, []);
         }
 
+        var supportedFormats = _audioEndpointController.GetSupportedFormats(targetDevice.Id, forceRefresh);
+        var probeDiagnostics = _audioEndpointController.GetLastProbeDiagnostics(targetDevice.Id);
+        if (!string.IsNullOrWhiteSpace(probeDiagnostics))
+        {
+            _logger.Info($"Probed formats on {targetDevice.FriendlyName}: {probeDiagnostics}");
+        }
+
         return new CurrentTargetDeviceCapabilitiesSnapshot(
             targetDevice.FriendlyName,
-            _audioEndpointController.GetSupportedFormats(targetDevice.Id, forceRefresh));
+            supportedFormats,
+            probeDiagnostics);
     }
 
     public void UpdateSettings(AppSettings settings)

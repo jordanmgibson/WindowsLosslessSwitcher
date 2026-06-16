@@ -8,8 +8,11 @@ namespace WindowsLosslessSwitcher.Services;
 public sealed class CoreAudioEndpointController : IAudioEndpointController
 {
     // Standard PCM sample rates probed via exclusive-mode to build the supported-formats cache.
-    // Covers CD (44.1/48 kHz), high-res (88.2/96/176.4/192 kHz), and DXD (352.8/384 kHz).
-    private static readonly int[] CandidateRates = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
+    // Covers CD (44.1/48 kHz), high-res (88.2/96/176.4/192 kHz), DXD (352.8/384 kHz), and the
+    // 705.6/768 kHz ceiling of current XMOS/Thesycon and C-Media DACs (e.g. FiiO KA3/KA5/K17/
+    // K5 Pro). Rates absent from this list are never queried, so a DAC's top rates would
+    // otherwise go undetected.
+    private static readonly int[] CandidateRates = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000];
 
     // Bit depths probed for each sample rate. 32-bit is included because some DACs advertise
     // 32-bit float shared-mode support even when 24-bit is the effective hardware depth.
@@ -26,6 +29,7 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
     private readonly object _supportedFormatsSync = new();
     private readonly Dictionary<string, IReadOnlyList<EndpointFormatDescriptor>> _supportedFormatsCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _lastApplyDiagnostics = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _lastProbeDiagnostics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, EndpointFormatKind> _lastSuccessfulKinds = new(StringComparer.Ordinal);
 
     public IReadOnlyList<AudioDeviceInfo> GetRenderDevices()
@@ -127,6 +131,14 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
         lock (_supportedFormatsSync)
         {
             return _lastApplyDiagnostics.TryGetValue(deviceId, out var diagnostics) ? diagnostics : null;
+        }
+    }
+
+    public string? GetLastProbeDiagnostics(string deviceId)
+    {
+        lock (_supportedFormatsSync)
+        {
+            return _lastProbeDiagnostics.TryGetValue(deviceId, out var diagnostics) ? diagnostics : null;
         }
     }
 
@@ -393,12 +405,69 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
         var currentDeviceFormat = EndpointFormatSupport.TryReadPropertyStoreDeviceFormat(device);
         var channels = currentDeviceFormat?.Format.Channels ?? device.AudioClient.MixFormat.Channels;
 
-        return EndpointFormatSupport.BuildSupportedFormats(
+        var probeCount = 0;
+        var acceptedCount = 0;
+        // Tallied by HRESULT so an all-rejected probe on a real device reveals *why* (e.g.
+        // AUDCLNT_E_UNSUPPORTED_FORMAT vs an exclusive-mode/in-use error) — the only way to
+        // confirm a device-specific detection failure without the hardware in hand.
+        var errorCounts = new SortedDictionary<string, int>(StringComparer.Ordinal);
+
+        bool RecordingIsSupported(WaveFormat waveFormat)
+        {
+            probeCount++;
+            try
+            {
+                var supported = device.AudioClient.IsFormatSupported(AudioClientShareMode.Exclusive, waveFormat);
+                if (supported)
+                {
+                    acceptedCount++;
+                }
+
+                return supported;
+            }
+            catch (Exception ex)
+            {
+                var key = $"0x{ex.HResult:X8}";
+                errorCounts[key] = errorCounts.TryGetValue(key, out var count) ? count + 1 : 1;
+                return false;
+            }
+        }
+
+        var descriptors = EndpointFormatSupport.BuildSupportedFormats(
             currentDeviceFormat?.NativeFormat,
             channels,
             CandidateRates,
             CandidateDepths,
-            waveFormat => IsExclusiveFormatSupported(device, waveFormat));
+            RecordingIsSupported);
+
+        CacheProbeDiagnostics(deviceId, BuildProbeDiagnostics(currentDeviceFormat, channels, probeCount, acceptedCount, errorCounts, descriptors));
+        return descriptors;
+    }
+
+    private static string BuildProbeDiagnostics(
+        EndpointFormatDescriptor? currentDeviceFormat,
+        int channels,
+        int probeCount,
+        int acceptedCount,
+        IReadOnlyDictionary<string, int> errorCounts,
+        IReadOnlyList<EndpointFormatDescriptor> descriptors)
+    {
+        var acceptedFormats = descriptors
+            .Where(descriptor => descriptor.Origin == EndpointFormatOrigin.ExclusiveProbe)
+            .Select(descriptor => descriptor.Format)
+            .Distinct()
+            .OrderBy(format => format.SampleRateHz)
+            .ThenBy(format => format.BitDepth)
+            .Select(format => format.DisplayName);
+
+        var errors = errorCounts.Count == 0
+            ? "none"
+            : string.Join(", ", errorCounts.Select(pair => $"{pair.Key}×{pair.Value}"));
+
+        return
+            $"channels={channels}, currentFormat={(currentDeviceFormat?.Format.DisplayName ?? "unknown")}, " +
+            $"probed={probeCount}, acceptedProbes={acceptedCount}, " +
+            $"acceptedFormats=[{string.Join(" ", acceptedFormats)}], probeErrors={{{errors}}}";
     }
 
     private void CacheSupportedFormats(string deviceId, IReadOnlyList<EndpointFormatDescriptor> descriptors)
@@ -409,15 +478,11 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
         }
     }
 
-    private static bool IsExclusiveFormatSupported(MMDevice device, WaveFormat waveFormat)
+    private void CacheProbeDiagnostics(string deviceId, string diagnostics)
     {
-        try
+        lock (_supportedFormatsSync)
         {
-            return device.AudioClient.IsFormatSupported(AudioClientShareMode.Exclusive, waveFormat);
-        }
-        catch
-        {
-            return false;
+            _lastProbeDiagnostics[deviceId] = diagnostics;
         }
     }
 

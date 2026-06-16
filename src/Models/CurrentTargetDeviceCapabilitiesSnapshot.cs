@@ -5,4 +5,5 @@ namespace WindowsLosslessSwitcher.Models;
 /// </summary>
 public sealed record CurrentTargetDeviceCapabilitiesSnapshot(
     string? DeviceName,
-    IReadOnlyList<AudioFormatCandidate> SupportedFormats);
+    IReadOnlyList<AudioFormatCandidate> SupportedFormats,
+    string? ProbeDiagnostics = null);
