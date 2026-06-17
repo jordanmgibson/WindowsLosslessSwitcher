@@ -43,6 +43,12 @@ public sealed class AppSettings
     public bool EnableVerboseDiagnostics { get; set; } = true;
 
     /// <summary>
+    /// Optional Apple Music storefront (two-letter region code, e.g. "us", "gb") used for catalog
+    /// lookups. When null/blank the storefront is detected from the OS region, falling back to "us".
+    /// </summary>
+    public string? AppleMusicStorefront { get; set; }
+
+    /// <summary>
     /// Last-resort recovery: when playback wedges repeatedly and every lighter recovery fails,
     /// restart Apple Music automatically. The play queue/position may reset, but the alternative
     /// is silence until the user restarts Apple Music themselves.

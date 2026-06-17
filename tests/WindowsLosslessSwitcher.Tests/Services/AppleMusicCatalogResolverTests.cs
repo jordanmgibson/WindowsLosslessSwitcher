@@ -225,6 +225,67 @@ public sealed class AppleMusicCatalogResolverTests
         Assert.Null(match);
     }
 
+    [Fact]
+    public async Task SearchBestMatchAsync_MatchesClassicalViaPerformerInAlbumField()
+    {
+        // Classical: GSMTC artist is the COMPOSER and the album field is "<performers> — <album>",
+        // while Apple lists the performers as the artist. Title 100 + performer artist 50 + album 10.
+        const string title = "Symphony No. 5 in C Minor, Op. 67: I. Allegro con brio";
+        var response = BuildSearchResponse(title, "Vienna Philharmonic & Carlos Kleiber", "Beethoven: Symphony No. 5");
+        var resolver = CreateResolver(sendAsync: (_, _) => Task.FromResult<string?>(response));
+        var track = CreateTrack(title, "Ludwig van Beethoven", "Vienna Philharmonic & Carlos Kleiber — Beethoven: Symphony No. 5");
+
+        var match = await resolver.SearchBestMatchAsync(track, "fake-token", CancellationToken.None);
+
+        Assert.NotNull(match);
+        Assert.Equal(title, match!.Value.Title);
+    }
+
+    [Fact]
+    public async Task SearchBestMatchAsync_RejectsClassicalWhenPerformerDiffers()
+    {
+        // A different recording of the same work (different performers/album) must NOT match — the
+        // composer matches neither field and the performers differ, so the artist score is rejected.
+        const string title = "Symphony No. 5 in C Minor, Op. 67: I. Allegro con brio";
+        var response = BuildSearchResponse(title, "Berlin Philharmonic & Herbert von Karajan", "Beethoven: The Symphonies");
+        var resolver = CreateResolver(sendAsync: (_, _) => Task.FromResult<string?>(response));
+        var track = CreateTrack(title, "Ludwig van Beethoven", "Vienna Philharmonic & Carlos Kleiber — Beethoven: Symphony No. 5");
+
+        var match = await resolver.SearchBestMatchAsync(track, "fake-token", CancellationToken.None);
+
+        Assert.Null(match);
+    }
+
+    // ── ResolveStorefront ─────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("GB", "gb")]
+    [InlineData("  us  ", "us")]
+    [InlineData("De", "de")]
+    public void ResolveStorefront_PrefersConfiguredOverrideTrimmedAndLowercased(string configured, string expected)
+    {
+        var logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+
+        var storefront = AppleMusicCatalogResolver.ResolveStorefront(configured, logger);
+
+        Assert.Equal(expected, storefront);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveStorefront_FallsBackToANonEmptyLowercaseCodeWhenNoOverride(string? configured)
+    {
+        var logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+
+        var storefront = AppleMusicCatalogResolver.ResolveStorefront(configured, logger);
+
+        // Detected from OS region, else "us" — either way a non-empty lowercase code.
+        Assert.False(string.IsNullOrWhiteSpace(storefront));
+        Assert.Equal(storefront.ToLowerInvariant(), storefront);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static AppleMusicCatalogResolver CreateResolver(
@@ -234,13 +295,13 @@ public sealed class AppleMusicCatalogResolverTests
         return new AppleMusicCatalogResolver(logger, sendAsync, "us");
     }
 
-    private static TrackSnapshot CreateTrack(string title, string artist) =>
+    private static TrackSnapshot CreateTrack(string title, string artist, string album = "Album") =>
         new(
             "AppleInc.AppleMusicWin_nzyj5cx40ttqa",
             null,
             title,
             artist,
-            "Album",
+            album,
             "test",
             DateTimeOffset.UtcNow);
 

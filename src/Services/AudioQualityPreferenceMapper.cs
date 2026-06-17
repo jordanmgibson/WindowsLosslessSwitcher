@@ -9,33 +9,28 @@ public static class AudioQualityPreferenceMapper
         var losslessEnabled = GetBoolean(preferences, "losslessEnabled");
         var qualityToken = GetQualityToken(preferences, "preferredStreamPlaybackAudioQuality");
 
-        if (!losslessEnabled)
-        {
-            return new ResolvedAudioFormat(
-                44100,
-                16,
-                ResolutionConfidence.Tier,
-                AudioFormatSource.TierFallback,
-                "Tier fallback: AAC");
-        }
+        var tierName = !losslessEnabled
+            ? "AAC"
+            : IsHighRes(qualityToken) ? "Hi-Res Lossless" : "Lossless";
 
-        if (IsHighRes(qualityToken))
-        {
-            return new ResolvedAudioFormat(
-                192000,
-                24,
-                ResolutionConfidence.Tier,
-                AudioFormatSource.TierFallback,
-                "Tier fallback: Hi-Res Lossless");
-        }
+        // The tier preference only tells us the user's ceiling, not the playing track's real rate.
+        // Emitting a tier-specific guess (e.g. 48 kHz) misrepresents that rate and forces the device
+        // there, upsampling redbook and capping hi-res. When we genuinely cannot determine the rate
+        // we return an honest, conservative 24/44.1 and let the UI tell the user it's a fallback.
+        return CreateUndetermined(
+            $"Rate undetermined (Apple Music quality: {tierName}) — defaulting to 24/44.1");
+    }
 
-        return new ResolvedAudioFormat(
-            48000,
+    /// <summary>
+    /// Builds the conservative "we could not determine the real track rate" fallback format.
+    /// </summary>
+    internal static ResolvedAudioFormat CreateUndetermined(string description) =>
+        new(
+            44100,
             24,
             ResolutionConfidence.Tier,
             AudioFormatSource.TierFallback,
-            "Tier fallback: Lossless");
-    }
+            description);
 
     private static bool GetBoolean(IDictionary<string, object?> preferences, string key)
     {

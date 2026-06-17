@@ -298,6 +298,19 @@ public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
             return null;
         }
 
+        // Distinguish a genuine "no usable format" from "file locked" (handled above): a null here
+        // means TagLib judged the container unsupported/corrupt, and a non-positive sample rate means
+        // it parsed but exposed no rate. Both otherwise surface downstream as a generic miss, hiding
+        // whether the probe can actually read Apple's PlayCache files.
+        if (result is null)
+        {
+            _logger.Info($"PlayCache file '{file.Name}' ({Path.GetExtension(file.Name)}) could not be parsed (unsupported or corrupt container).");
+        }
+        else if (result.SampleRateHz <= 0)
+        {
+            _logger.Info($"PlayCache file '{file.Name}' ({Path.GetExtension(file.Name)}) parsed but reported sample rate {result.SampleRateHz} (bit depth {result.BitDepth}).");
+        }
+
         lock (_cacheSync)
         {
             _probeCache[file.FullName] = new CachedProbe(file.Length, file.LastWriteTimeUtc, result);

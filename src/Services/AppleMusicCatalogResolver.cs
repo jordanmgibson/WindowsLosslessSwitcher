@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
 using WindowsLosslessSwitcher.Abstractions;
@@ -28,8 +29,8 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
     private string? _developerToken;
     private DateTimeOffset _developerTokenExpiresAtUtc;
 
-    public AppleMusicCatalogResolver(DiagnosticsLogger logger)
-        : this(logger, SendAsync, "us")
+    public AppleMusicCatalogResolver(DiagnosticsLogger logger, string? configuredStorefront = null)
+        : this(logger, SendAsync, ResolveStorefront(configuredStorefront, logger))
     {
     }
 
@@ -41,6 +42,39 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         _logger = logger;
         _sendAsync = sendAsync;
         _storefront = storefront;
+    }
+
+    /// <summary>
+    /// Resolves the Apple Music storefront: an explicit user override wins, otherwise the OS region,
+    /// otherwise "us". Catalog availability and matching differ by storefront, so guessing "us" for a
+    /// non-US listener can return different results (or none) for the track they are actually playing.
+    /// </summary>
+    internal static string ResolveStorefront(string? configuredStorefront, DiagnosticsLogger logger)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredStorefront))
+        {
+            var configured = configuredStorefront.Trim().ToLowerInvariant();
+            logger.Info($"Catalog resolver storefront '{configured}' (source: configured override).");
+            return configured;
+        }
+
+        try
+        {
+            var region = RegionInfo.CurrentRegion.TwoLetterISORegionName;
+            if (!string.IsNullOrWhiteSpace(region))
+            {
+                var detected = region.ToLowerInvariant();
+                logger.Info($"Catalog resolver storefront '{detected}' (source: OS region).");
+                return detected;
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.Warn($"Catalog resolver storefront detection from OS region failed: {ex.Message}");
+        }
+
+        logger.Info("Catalog resolver storefront 'us' (source: default).");
+        return "us";
     }
 
     public string Name => "AppleMusicCatalogResolver";
@@ -181,6 +215,9 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         CancellationToken cancellationToken)
     {
         CatalogSongMatch? bestMatch = null;
+        _logger.Info(
+            $"Catalog resolver searching storefront '{_storefront}' for {track.UniqueKey}: " +
+            $"title='{track.Title}', artist='{track.Artist}', album='{track.Album}'.");
         foreach (var attempt in BuildSearchAttempts(track))
         {
             var query = Uri.EscapeDataString(attempt.Query);
@@ -195,6 +232,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(json))
             {
+                _logger.Info($"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned no response for {track.UniqueKey}.");
                 continue;
             }
 
@@ -203,10 +241,14 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
                 !results.TryGetProperty("songs", out var songs) ||
                 !songs.TryGetProperty("data", out var data))
             {
+                _logger.Info($"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned 0 song results for {track.UniqueKey}.");
                 continue;
             }
 
-            CatalogSongMatch? bestAttemptMatch = null;
+            // Score every raw result up front so we can log the top candidates with their scores —
+            // including negative (hard-rejected) ones. Without this, a 100% miss is indistinguishable
+            // from "Apple returned nothing", which is exactly what we need to tell apart.
+            var rawCandidates = new List<(CatalogSongMatch Match, int Score)>();
             foreach (var item in data.EnumerateArray())
             {
                 var match = CatalogSongMatch.FromJson(item);
@@ -215,13 +257,27 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
                     continue;
                 }
 
-                var score = ScoreMatch(track, match.Value.Title, match.Value.Artist, match.Value.Album);
+                rawCandidates.Add((match.Value, ScoreMatch(track, match.Value.Title, match.Value.Artist, match.Value.Album)));
+            }
+
+            var topCandidates = rawCandidates
+                .OrderByDescending(candidate => candidate.Score)
+                .Take(3)
+                .Select(candidate =>
+                    $"\"{candidate.Match.Title}\" / \"{candidate.Match.Artist}\" / \"{candidate.Match.Album}\" (score={candidate.Score})");
+            _logger.Info(
+                $"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned {data.GetArrayLength()} result(s) for {track.UniqueKey}; " +
+                $"top: {(rawCandidates.Count == 0 ? "none" : string.Join("; ", topCandidates))}.");
+
+            CatalogSongMatch? bestAttemptMatch = null;
+            foreach (var (match, score) in rawCandidates)
+            {
                 if (score < 0)
                 {
                     continue;
                 }
 
-                var candidate = match.Value with { Score = score };
+                var candidate = match with { Score = score };
                 if (bestAttemptMatch is null || candidate.CompareTo(bestAttemptMatch.Value) > 0)
                 {
                     bestAttemptMatch = candidate;
@@ -408,13 +464,28 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             return -1;
         }
 
-        var artistScore = ScoreArtist(track.Artist, artist);
+        // Classical tracks arrive with the COMPOSER in the artist field and "<performers> — <album>"
+        // packed into the album field, whereas Apple's catalog lists the PERFORMERS as the artist.
+        // So score the candidate's artist against either the (composer) artist field or the
+        // performers parsed from the album, and score the album against either the whole field or its
+        // album part. This stays strictly exact and recording-specific: a different recording has
+        // different performers (and album) and will not reach MinimumAcceptedScore.
+        var hasPerformers = AppleMusicTrackMetadataNormalizer.TrySplitOnDashSeparator(
+            track.Album, out var performers, out var albumPart);
+
+        var artistScore = Math.Max(
+            ScoreArtist(track.Artist, artist),
+            hasPerformers ? ScoreArtist(performers, artist) : -1);
         if (artistScore < 0)
         {
             return -1;
         }
 
-        return titleScore + artistScore + ScoreAlbum(track.Album, album);
+        var albumScore = Math.Max(
+            ScoreAlbum(track.Album, album),
+            hasPerformers ? ScoreAlbum(albumPart, album) : 0);
+
+        return titleScore + artistScore + albumScore;
     }
 
     private static int ScoreTitle(string? expected, string? actual)

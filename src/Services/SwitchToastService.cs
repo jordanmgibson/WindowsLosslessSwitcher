@@ -9,14 +9,20 @@ public sealed class SwitchToastService : IDisposable
     private SwitchToastWindow? _currentToast;
 
     public void ShowSwitchedFormat(string? deviceName, AudioFormatCandidate format, TrackSnapshot? track)
+        => Show("Switched audio format", AudioFormatTextFormatter.Format(format), deviceName, track);
+
+    public void ShowMessage(string title, string message, string? deviceName, TrackSnapshot? track)
+        => Show(title, message, deviceName, track);
+
+    private void Show(string title, string message, string? deviceName, TrackSnapshot? track)
     {
         if (Application.Current.Dispatcher.CheckAccess())
         {
-            ShowSwitchedFormatCore(deviceName, format, track);
+            ShowCore(title, message, deviceName, track);
             return;
         }
 
-        Application.Current.Dispatcher.Invoke(() => ShowSwitchedFormatCore(deviceName, format, track));
+        Application.Current.Dispatcher.Invoke(() => ShowCore(title, message, deviceName, track));
     }
 
     public void Dispose()
@@ -30,13 +36,13 @@ public sealed class SwitchToastService : IDisposable
         _currentToast = null;
     }
 
-    private void ShowSwitchedFormatCore(string? deviceName, AudioFormatCandidate format, TrackSnapshot? track)
+    private void ShowCore(string title, string message, string? deviceName, TrackSnapshot? track)
     {
         _currentToast?.Close();
 
         var toast = new SwitchToastWindow(
-            "Switched audio format",
-            AudioFormatTextFormatter.Format(format),
+            title,
+            message,
             deviceName,
             BuildTrackDetails(track));
         toast.Closed += (_, _) =>

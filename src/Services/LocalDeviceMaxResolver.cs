@@ -112,18 +112,25 @@ public sealed class LocalDeviceMaxResolver : IFormatResolver
             return null;
         }
 
-        var atFileRate = supported.Where(candidate => candidate.SampleRateHz == fileFormat.SampleRateHz).ToList();
-        if (atFileRate.Count == 0)
+        var targetRate = SelectTargetRate(supported, fileFormat.SampleRateHz);
+        if (targetRate is null)
         {
-            _logger.Info($"Local device-max resolver: device '{device.FriendlyName}' does not support file rate {fileFormat.SampleRateHz}.");
+            _logger.Info($"Local device-max resolver: device '{device.FriendlyName}' supports no rate at or below file rate {fileFormat.SampleRateHz}.");
             return null;
         }
+
+        var atRate = supported.Where(candidate => candidate.SampleRateHz == targetRate.Value).ToList();
 
         // Match the file's bit depth when the device supports it at that rate; otherwise take the
         // highest depth available at the rate (lossy files report no depth).
         var chosen = (fileFormat.BitDepth > 0
-            ? atFileRate.FirstOrDefault(candidate => candidate.BitDepth == fileFormat.BitDepth)
-            : null) ?? atFileRate[^1];
+            ? atRate.FirstOrDefault(candidate => candidate.BitDepth == fileFormat.BitDepth)
+            : null) ?? atRate[^1];
+
+        if (targetRate.Value != fileFormat.SampleRateHz)
+        {
+            _logger.Info($"Local device-max resolver: device '{device.FriendlyName}' does not support file rate {fileFormat.SampleRateHz}; downsampling target to {targetRate.Value} (highest supported integer submultiple).");
+        }
 
         _logger.Info($"Local device-max resolver: local track '{track.Title}' matched file with format {fileFormat.BitDepth}/{fileFormat.SampleRateHz} -> applying {chosen.BitDepth}/{chosen.SampleRateHz} on '{device.FriendlyName}'.");
         return new ResolvedAudioFormat(
@@ -132,5 +139,33 @@ public sealed class LocalDeviceMaxResolver : IFormatResolver
             ResolutionConfidence.Exact,
             AudioFormatSource.LocalFile,
             $"Local file: {chosen.BitDepth}/{chosen.SampleRateHz / 1000.0:0.###} from file metadata");
+    }
+
+    /// <summary>
+    /// Chooses the device rate to target for a file at <paramref name="fileRate"/>. An exact match
+    /// wins. Otherwise we never upsample past the source: prefer the highest supported rate the file
+    /// rate is an integer multiple of (e.g. 192000 → 96000, 176400 → 88200), keeping the source's
+    /// 44.1- or 48-kHz family; failing that, the highest supported rate below the file rate. Returns
+    /// null when the device supports nothing at or below the file rate.
+    /// </summary>
+    private static int? SelectTargetRate(IReadOnlyList<AudioFormatCandidate> supported, int fileRate)
+    {
+        if (supported.Any(candidate => candidate.SampleRateHz == fileRate))
+        {
+            return fileRate;
+        }
+
+        var below = supported
+            .Select(candidate => candidate.SampleRateHz)
+            .Where(rate => rate > 0 && rate < fileRate)
+            .Distinct()
+            .ToList();
+        if (below.Count == 0)
+        {
+            return null;
+        }
+
+        var submultiples = below.Where(rate => fileRate % rate == 0).ToList();
+        return submultiples.Count > 0 ? submultiples.Max() : below.Max();
     }
 }

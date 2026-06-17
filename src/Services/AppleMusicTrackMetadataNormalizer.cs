@@ -47,11 +47,17 @@ internal static class AppleMusicTrackMetadataNormalizer
 
         if (string.IsNullOrWhiteSpace(normalizedAlbum) &&
             !string.IsNullOrWhiteSpace(normalizedArtist) &&
-            TrySplitArtistAndAlbum(normalizedArtist, out var splitArtist, out var splitAlbum))
+            TrySplitOnDashSeparator(normalizedArtist, out var splitArtist, out var splitAlbum))
         {
             normalizedArtist = splitArtist;
             normalizedAlbum = splitAlbum;
         }
+
+        // Apple Music on Windows prefixes the GSMTC artist with "By " (the field arrives as
+        // "By <artist name>"). Left in place it pollutes the catalog search term and drops artist
+        // scoring from an exact match (50) to a mere substring match (35), which alone can sink an
+        // otherwise-correct match.
+        normalizedArtist = StripLeadingByPrefix(normalizedArtist);
 
         return new NormalizedTrackMetadata(
             normalizedTitle,
@@ -118,6 +124,14 @@ internal static class AppleMusicTrackMetadataNormalizer
         return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
     }
 
+    private static string StripLeadingByPrefix(string value)
+    {
+        const string prefix = "By ";
+        return value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? value[prefix.Length..].TrimStart()
+            : value;
+    }
+
     private static string ExtractPrimaryArtist(string? artist)
     {
         if (string.IsNullOrWhiteSpace(artist))
@@ -137,10 +151,19 @@ internal static class AppleMusicTrackMetadataNormalizer
         return artist.Trim();
     }
 
-    private static bool TrySplitArtistAndAlbum(string value, out string artist, out string album)
+    /// <summary>
+    /// Splits a value on the first em-/en-dash separator into its leading and trailing parts.
+    /// Apple Music packs "&lt;artist&gt; — &lt;album&gt;" into a single field when one is missing, and
+    /// "&lt;performers&gt; — &lt;album&gt;" into the album field for classical tracks; both use this split.
+    /// </summary>
+    internal static bool TrySplitOnDashSeparator(string? value, out string before, out string after)
     {
-        artist = string.Empty;
-        album = string.Empty;
+        before = string.Empty;
+        after = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
 
         foreach (var separator in new[] { " — ", " – " })
         {
@@ -150,9 +173,9 @@ internal static class AppleMusicTrackMetadataNormalizer
                 continue;
             }
 
-            artist = value[..index].Trim();
-            album = value[(index + separator.Length)..].Trim();
-            if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(album))
+            before = value[..index].Trim();
+            after = value[(index + separator.Length)..].Trim();
+            if (!string.IsNullOrWhiteSpace(before) && !string.IsNullOrWhiteSpace(after))
             {
                 return true;
             }
