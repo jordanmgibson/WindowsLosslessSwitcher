@@ -106,11 +106,15 @@ public partial class App : Application
         var audioEndpointController = new CoreAudioEndpointController();
         var formatCacheStore = new FormatCacheStore(_logger);
         _formatCacheStore = formatCacheStore;
-        var catalogResolver = new AppleMusicCatalogResolver(_logger, formatCacheStore);
+        var catalogResolver = new AppleMusicCatalogResolver(_logger, formatCacheStore, _settings.AppleMusicStorefront);
         // Deliberately store-less: the verification path applies results via a compare-and-swap in
         // FormatCacheStore, which a store-backed resolver would defeat by rewriting the entry during
         // the lookup. FormatCacheVerificationService rejects a store-backed resolver at construction.
-        var catalogResolverForCacheVerification = new AppleMusicCatalogResolver(_logger);
+        // Same storefront as the live path, so verification searches the catalog the entry came from.
+        var catalogResolverForCacheVerification = new AppleMusicCatalogResolver(
+            _logger,
+            formatCacheStore: null,
+            _settings.AppleMusicStorefront);
         var resolverChain = new ResolverChain(
             [
                 new FormatCacheResolver(formatCacheStore, _logger),
@@ -185,12 +189,36 @@ public partial class App : Application
             _trayIconHost?.UpdateStatus(status.ResolverStatusText);
             _trayIconHost?.UpdateCurrentFormat(GetTrayCurrentFormatText());
 
-            if (_settings?.EnableSwitchToasts == true &&
-                status.WasFormatChanged &&
-                status.AppliedFormat is not null)
+            if (status.WasFormatChanged && status.AppliedFormat is not null)
             {
-                var toastTrack = _settings.IncludeTrackMetadataInSwitchToasts ? status.Track : null;
-                _switchToastService?.ShowSwitchedFormat(status.ActiveDeviceName, status.AppliedFormat, toastTrack);
+                // A Tier-confidence result means the real track rate could not be determined (no catalog
+                // match, no local cache) and we fell back to a conservative 24/44.1. Tell the user, so
+                // the rate isn't mistaken for the track's true resolution. Gating on WasFormatChanged
+                // naturally dedupes: once the device is at the fallback rate, later undetermined tracks
+                // don't change it and won't re-notify.
+                var isUndetermined = status.RequestedFormat?.Confidence == ResolutionConfidence.Tier;
+                if (isUndetermined)
+                {
+                    _trayIconHost?.UpdateStatus(
+                        $"Rate undetermined — using {AudioFormatTextFormatter.Format(status.AppliedFormat)}");
+                }
+
+                if (_settings?.EnableSwitchToasts == true)
+                {
+                    var toastTrack = _settings.IncludeTrackMetadataInSwitchToasts ? status.Track : null;
+                    if (isUndetermined)
+                    {
+                        _switchToastService?.ShowMessage(
+                            "Audio rate could not be determined",
+                            $"Apple Music didn't report this track's rate — using {AudioFormatTextFormatter.Format(status.AppliedFormat)}.",
+                            status.ActiveDeviceName,
+                            toastTrack);
+                    }
+                    else
+                    {
+                        _switchToastService?.ShowSwitchedFormat(status.ActiveDeviceName, status.AppliedFormat, toastTrack);
+                    }
+                }
             }
         });
     }
