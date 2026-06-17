@@ -53,14 +53,25 @@ public sealed class SwitchToastService : IDisposable
     }
 
     public void ShowSwitchedFormat(string? deviceName, AudioFormatCandidate format, TrackSnapshot? track)
+        => ShowSwitchToast("Switched audio format", AudioFormatTextFormatter.Format(format), deviceName, track);
+
+    /// <summary>
+    /// Shows a switch-style toast with custom title and message text — used for the
+    /// rate-undetermined fallback notification. Same replacement/queueing semantics as
+    /// <see cref="ShowSwitchedFormat"/>.
+    /// </summary>
+    public void ShowMessage(string title, string message, string? deviceName, TrackSnapshot? track)
+        => ShowSwitchToast(title, message, deviceName, track);
+
+    private void ShowSwitchToast(string title, string message, string? deviceName, TrackSnapshot? track)
     {
         if (_checkAccess())
         {
-            ShowSwitchedFormatCore(deviceName, format, track);
+            ShowSwitchToastCore(title, message, deviceName, track);
             return;
         }
 
-        _invoke(() => ShowSwitchedFormatCore(deviceName, format, track));
+        _invoke(() => ShowSwitchToastCore(title, message, deviceName, track));
     }
 
     public void DiscardPendingFormatCacheUpdates()
@@ -101,7 +112,7 @@ public sealed class SwitchToastService : IDisposable
         ShowFormatCacheToast(request);
     }
 
-    private void ShowSwitchedFormatCore(string? deviceName, AudioFormatCandidate format, TrackSnapshot? track)
+    private void ShowSwitchToastCore(string title, string message, string? deviceName, TrackSnapshot? track)
     {
         if (_disposed)
         {
@@ -110,8 +121,8 @@ public sealed class SwitchToastService : IDisposable
 
         var toast = CreateToast(
             ToastKind.Switch,
-            "Switched audio format",
-            AudioFormatTextFormatter.Format(format),
+            title,
+            message,
             deviceName,
             track);
 

@@ -29,12 +29,8 @@ public sealed class TierFallbackResolver : IFormatResolver
             if (!File.Exists(_paths.LibraryAgentPreferencesPath))
             {
                 _logger.Warn($"Tier fallback preferences file was not found at {_paths.LibraryAgentPreferencesPath}.");
-                return Task.FromResult<ResolvedAudioFormat?>(new ResolvedAudioFormat(
-                    44100,
-                    16,
-                    ResolutionConfidence.Tier,
-                    AudioFormatSource.TierFallback,
-                    "Tier fallback: AAC default"));
+                return Task.FromResult<ResolvedAudioFormat?>(AudioQualityPreferenceMapper.CreateUndetermined(
+                    "Rate undetermined (Apple Music preferences unavailable) — defaulting to 24/44.1"));
             }
 
             var preferences = _plistReader.ReadRootDictionary(_paths.LibraryAgentPreferencesPath);
@@ -45,12 +41,8 @@ public sealed class TierFallbackResolver : IFormatResolver
         catch (Exception ex)
         {
             _logger.Error("Tier fallback resolver failed.", ex);
-            return Task.FromResult<ResolvedAudioFormat?>(new ResolvedAudioFormat(
-                44100,
-                16,
-                ResolutionConfidence.Tier,
-                AudioFormatSource.TierFallback,
-                "Tier fallback: AAC default after parser failure"));
+            return Task.FromResult<ResolvedAudioFormat?>(AudioQualityPreferenceMapper.CreateUndetermined(
+                "Rate undetermined (Apple Music preferences could not be parsed) — defaulting to 24/44.1"));
         }
     }
 }

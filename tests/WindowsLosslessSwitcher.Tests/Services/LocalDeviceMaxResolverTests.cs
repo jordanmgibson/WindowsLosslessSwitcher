@@ -96,6 +96,36 @@ public sealed class LocalDeviceMaxResolverTests
     }
 
     [Fact]
+    public async Task FileRateAboveDeviceMax_DownsamplesToHighestSubmultiple()
+    {
+        // 192 kHz file on a DAC that maxes at 96 kHz: target 96 (192/2), not the tier fallback.
+        var endpoint = new StubEndpoint([Rate44_16, new(48000, 24, 2), new(88200, 24, 2), Rate96_24]);
+        var reader = new StubFileFormatReader(new LocalTrackFileFormat(192000, 24, "cache.m4a"));
+        var resolver = CreateResolver(endpoint, reader);
+
+        var result = await resolver.ResolveAsync(CreateTrack(), CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(96000, result!.SampleRateHz);
+        Assert.Equal(24, result.BitDepth);
+        Assert.Equal(AudioFormatSource.LocalFile, result.Source);
+    }
+
+    [Fact]
+    public async Task FileRateAboveDeviceMax_PrefersSameFamilySubmultiple()
+    {
+        // 176.4 kHz file: 96 is closer numerically, but 88.2 keeps the 44.1 family (176400/2).
+        var endpoint = new StubEndpoint([Rate44_16, new(48000, 24, 2), new(88200, 24, 2), Rate96_24]);
+        var reader = new StubFileFormatReader(new LocalTrackFileFormat(176400, 24, "cache.m4a"));
+        var resolver = CreateResolver(endpoint, reader);
+
+        var result = await resolver.ResolveAsync(CreateTrack(), CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(88200, result!.SampleRateHz);
+    }
+
+    [Fact]
     public async Task FileNotReadable_ReturnsNull()
     {
         var endpoint = new StubEndpoint([Rate44_16, Rate192_24]);
