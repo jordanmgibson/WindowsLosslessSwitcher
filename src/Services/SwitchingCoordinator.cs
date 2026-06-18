@@ -685,6 +685,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                     correlation);
             }
 
+            _logger.Info($"Intro-trace: about to apply format; liveStream={liveStream}; {DescribePlaybackProbe(targetDevice.Id)}.", correlation);
             var variant = _audioEndpointController.DescribeSupportedFormat(targetDevice.Id, decision.SelectedFormat) ?? "unknown native format";
             _logger.Info(
                 $"Applying {decision.SelectedFormat.DisplayName} on {targetDevice.FriendlyName} using {variant}. " +
@@ -888,7 +889,21 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         // a switch after the stream actually drained recovers). The real pause + drain happens
         // later, at the switch point, once the stream is established.
         MuteTargetDeviceForProcessing(_lastTargetDeviceId, correlation);
+        _logger.Info($"Intro-trace: muted on track change; {DescribePlaybackProbe(_lastTargetDeviceId)}.", correlation);
         PublishStatusIfCurrent(generation, new SwitchingStatus("Switching: Preparing", null, track, null, null, null));
+    }
+
+    // Diagnostic snapshot of "where the timeline is" vs "is the agent actually outputting audio",
+    // tagged "Intro-trace" so a log can be followed step-by-step through the switch/rebuild/realign.
+    // The lost-intro symptom reproduces only on some machines, so this captures whether (and where)
+    // the timeline position jumps forward of the audio across the rebuild + schedule realign.
+    private string DescribePlaybackProbe(string? deviceId)
+    {
+        var timeline = _mediaTransportController.GetPlaybackState().TimelinePosition;
+        var peak = string.IsNullOrEmpty(deviceId)
+            ? null
+            : _audioEndpointController.GetProcessSessionPeak(deviceId, AppleMediaAgentProcessName);
+        return $"timeline={(timeline?.ToString() ?? "n/a")}, agentPeak={(peak?.ToString("F6") ?? "n/a")}";
     }
 
     
@@ -1169,7 +1184,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             var peak = _audioEndpointController.GetProcessSessionPeak(deviceId, AppleMediaAgentProcessName) ?? 0f;
             if (active == true && peak > PlaybackRestorePeakThreshold)
             {
-                _logger.Info($"Render stream rebuilt with audio {stopwatch.ElapsedMilliseconds} ms after the live format change.", correlation);
+                _logger.Info($"Render stream rebuilt with audio {stopwatch.ElapsedMilliseconds} ms after the live format change; timeline={(state.TimelinePosition?.ToString() ?? "n/a")}, agentPeak={peak:F6}.", correlation);
                 return true;
             }
 
@@ -1187,6 +1202,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var state = _mediaTransportController.GetPlaybackState();
+        _logger.Info($"Intro-trace: realign start; {DescribePlaybackProbe(deviceId)}.", correlation);
         if (!state.IsPlaying)
         {
             // The user paused meanwhile — never play over them. Their next resume realigns
@@ -1202,6 +1218,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             return true; // playback itself is healthy — keep it
         }
 
+        _logger.Info($"Intro-trace: realign paused; {DescribePlaybackProbe(deviceId)}.", correlation);
         await Task.Delay(PlaybackRecoveryNudgeDelay, cancellationToken);
         var resumed = await TryPlayWithRetriesAsync(cancellationToken);
         if (!resumed)
@@ -1209,6 +1226,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             _logger.Warn("Schedule realign play failed; running recovery.", correlation);
             return false;
         }
+
+        _logger.Info($"Intro-trace: realign resumed; {DescribePlaybackProbe(deviceId)}.", correlation);
 
         var restored = await ObservePlaybackRestoredAsync(deviceId, PlaybackRestoreObservationWindow, cancellationToken);
         _logger.Info(
