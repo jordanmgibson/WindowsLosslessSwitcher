@@ -170,6 +170,27 @@
                         Visibility="{Binding IsSwitchToastMetadataOptionVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
                         IsChecked="{Binding IncludeTrackMetadataInSwitchToasts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                         Content="Include song, artist, and album in popup" />
+              <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Re-check cached catalog formats on playback after"
+                           TextWrapping="Wrap" />
+                <StackPanel Grid.Column="1"
+                            Margin="12,0,0,0"
+                            Orientation="Horizontal">
+                  <ComboBox Width="72"
+                            VerticalAlignment="Center"
+                            ItemsSource="{Binding FormatCacheRefreshDayOptions}"
+                            SelectedItem="{Binding FormatCacheRefreshDays, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                  <TextBlock Margin="8,0,0,0"
+                             VerticalAlignment="Center"
+                             Text="days" />
+                </StackPanel>
+              </Grid>
             </StackPanel>
 
             <Border Margin="0,16,0,0"

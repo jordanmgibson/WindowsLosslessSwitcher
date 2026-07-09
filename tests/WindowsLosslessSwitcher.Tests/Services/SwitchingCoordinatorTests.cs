@@ -777,12 +777,61 @@ public sealed class SwitchingCoordinatorTests
         Assert.True(audioEndpointController.MasterMute);
     }
 
+    [Fact]
+    public async Task TrackChange_WhenFormatCached_VerifiesCacheAndFiresUpdateEventIfStale()
+    {
+        var track = CreateTrack();
+        var databasePath = Path.Combine(Path.GetTempPath(), "WindowsLosslessSwitcher.Tests", Guid.NewGuid().ToString("N"), "format-cache.db");
+        var cacheStore = new FormatCacheStore(databasePath, null);
+        
+        var originalFormat = CreateResolvedFormat(CurrentFormat, AudioFormatSource.CatalogManifest, "song-123");
+        cacheStore.Store(track.UniqueKey, originalFormat);
+
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+        connection.Open();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "UPDATE format_cache SET last_verified_at_utc = @t";
+        cmd.Parameters.AddWithValue("@t", DateTimeOffset.UtcNow.AddDays(-40).ToUniversalTime().ToString("O"));
+        cmd.ExecuteNonQuery();
+
+        var trackSource = new TestTrackSource();
+        var mediaTransportController = new TestMediaTransportController();
+        var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat]);
+        var cachedFormat = CreateResolvedFormat(CurrentFormat, AudioFormatSource.CachedCatalog, "song-123");
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(cachedFormat));
+        
+        var updatedFormat = CreateResolvedFormat(LosslessFormat, AudioFormatSource.CatalogManifest, "song-123");
+        var updatedResolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(updatedFormat));
+        
+        await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver, formatCacheStore: cacheStore, catalogResolverForCacheVerification: updatedResolver);
+        
+        var updateTask = new TaskCompletionSource<FormatCacheUpdateEventArgs>();
+        coordinator.FormatCacheUpdated += (s, e) => updateTask.TrySetResult(e);
+
+        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: CachedCatalog");
+
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+
+        trackSource.RaiseTrackChanged(track);
+        await finalStatusTask.WaitAsync(DefaultTimeout);
+
+        var update = await updateTask.Task.WaitAsync(DefaultTimeout);
+        Assert.Equal(CurrentFormat.SampleRateHz, update.PreviousEntry.SampleRateHz);
+        Assert.Equal(LosslessFormat.SampleRateHz, update.UpdatedFormat.SampleRateHz);
+        Assert.Equal(track.Title, update.Track.Title);
+        
+        FormatCacheStore.ReleaseConnectionsForTesting();
+        try { Directory.Delete(Path.GetDirectoryName(databasePath)!, true); } catch { }
+    }
+
     private static SwitchingCoordinator CreateCoordinator(
         TestTrackSource trackSource,
         TestMediaTransportController mediaTransportController,
         TestAudioEndpointController audioEndpointController,
         IFormatResolver resolver,
-        TestAppleMusicProcessController? appleMusicProcessController = null)
+        TestAppleMusicProcessController? appleMusicProcessController = null,
+        FormatCacheStore? formatCacheStore = null,
+        IFormatResolver? catalogResolverForCacheVerification = null)
     {
         // Mirror reality by default: the media agent's render session is active while playing,
         // and keeps draining for a moment after a pause before going inactive.
@@ -805,7 +854,9 @@ public sealed class SwitchingCoordinatorTests
             new ResolverChain([resolver]),
             audioEndpointController,
             logger,
-            appleMusicProcessController);
+            appleMusicProcessController,
+            formatCacheStore,
+            catalogResolverForCacheVerification);
     }
 
     private static AppSettings CreateSettings(AudioFormatCandidate? originalTargetFormat = null) =>
@@ -836,13 +887,17 @@ public sealed class SwitchingCoordinatorTests
 
     private static ResolvedAudioFormat CreateResolvedFormat(
         AudioFormatCandidate format,
-        AudioFormatSource source = AudioFormatSource.CatalogManifest) =>
+        AudioFormatSource source = AudioFormatSource.CatalogManifest,
+        string? catalogSongId = null) =>
         new(
             format.SampleRateHz,
             format.BitDepth,
             ResolutionConfidence.Exact,
             source,
-            $"{source}: {format.DisplayName}");
+            $"{source}: {format.DisplayName}")
+        {
+            CatalogSongId = catalogSongId
+        };
 
     private static Task<SwitchingStatus> WaitForStatusAsync(
         SwitchingCoordinator coordinator,

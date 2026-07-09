@@ -8,6 +8,22 @@ public sealed class SwitchToastService : IDisposable
 {
     private SwitchToastWindow? _currentToast;
 
+    public void ShowFormatCacheUpdated(
+        string? deviceName,
+        AudioFormatCandidate previousFormat,
+        AudioFormatCandidate updatedFormat,
+        TrackSnapshot? track)
+    {
+        if (Application.Current.Dispatcher.CheckAccess())
+        {
+            ShowFormatCacheUpdatedCore(deviceName, previousFormat, updatedFormat, track);
+            return;
+        }
+
+        Application.Current.Dispatcher.Invoke(() =>
+            ShowFormatCacheUpdatedCore(deviceName, previousFormat, updatedFormat, track));
+    }
+
     public void ShowSwitchedFormat(string? deviceName, AudioFormatCandidate format, TrackSnapshot? track)
     {
         if (Application.Current.Dispatcher.CheckAccess())
@@ -28,6 +44,32 @@ public sealed class SwitchToastService : IDisposable
 
         _currentToast.Close();
         _currentToast = null;
+    }
+
+    private void ShowFormatCacheUpdatedCore(
+        string? deviceName,
+        AudioFormatCandidate previousFormat,
+        AudioFormatCandidate updatedFormat,
+        TrackSnapshot? track)
+    {
+        _currentToast?.Close();
+
+        var toast = new SwitchToastWindow(
+            "Format updated for next playback",
+            $"{AudioFormatTextFormatter.Format(previousFormat)} -> {AudioFormatTextFormatter.Format(updatedFormat)}",
+            deviceName,
+            BuildTrackDetails(track));
+        toast.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_currentToast, toast))
+            {
+                _currentToast = null;
+            }
+        };
+
+        _currentToast = toast;
+        toast.Show();
+        toast.StartAutoClose();
     }
 
     private void ShowSwitchedFormatCore(string? deviceName, AudioFormatCandidate format, TrackSnapshot? track)

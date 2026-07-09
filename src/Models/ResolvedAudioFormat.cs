@@ -6,6 +6,7 @@ namespace WindowsLosslessSwitcher.Models;
 public enum AudioFormatSource
 {
     CatalogManifest,
+    CachedCatalog,
     LocalFile,
     TierFallback,
 }
@@ -33,4 +34,9 @@ public sealed record ResolvedAudioFormat(
     /// Gets the observation timestamp associated with the resolved source, when available.
     /// </summary>
     public DateTimeOffset? ObservedAtUtc { get; init; }
+
+    /// <summary>
+    /// Gets the Apple Music catalog song id when the format was resolved from the catalog.
+    /// </summary>
+    public string? CatalogSongId { get; init; }
 }

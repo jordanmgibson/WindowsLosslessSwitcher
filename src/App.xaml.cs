@@ -64,6 +64,7 @@ public partial class App : Application
         _viewModel.DefaultBitDepth = _settings.DefaultBitDepth;
         _viewModel.EnableSwitchToasts = _settings.EnableSwitchToasts;
         _viewModel.IncludeTrackMetadataInSwitchToasts = _settings.IncludeTrackMetadataInSwitchToasts;
+        _viewModel.FormatCacheRefreshDays = _settings.FormatCacheRefreshDays;
         UpdateOriginalFormatRestoreState();
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         _viewModel.RefreshRequested += RefreshDevices;
@@ -91,15 +92,21 @@ public partial class App : Application
         _viewModel.UpdateAppVersion(_appUpdater.CurrentStatus);
         _trayIconHost.UpdateVersion(_appUpdater.CurrentStatus);
 
-        // Order matters: the catalog resolver runs first and is the authoritative cloud-vs-local test —
-        // a confident catalog match yields the exact Apple Music format. When the catalog does not match
-        // (local files, or tracks it can't identify), LocalDeviceMaxResolver applies the actual format
-        // read from the track's PlayCache file, or the device's highest supported format when the file
-        // can't be read. TierFallbackResolver is the terminal safety net when there is no usable device.
+        // Order matters in the resolver chain:
+        // 1. FormatCacheResolver skips calling AppleMusicCatalogResolver on SQLite cache hit.
+        // 2. AppleMusicCatalogResolver is the authoritative test when cache misses — a confident
+        //    catalog match yields the exact Apple Music format.
+        // 3. When the catalog does not match (local files, or tracks it can't identify),
+        //    LocalDeviceMaxResolver applies the actual format read from the track's PlayCache file,
+        //    or the device's highest supported format when the file can't be read.
+        // 4. TierFallbackResolver is the terminal safety net when there is no usable device.
         var audioEndpointController = new CoreAudioEndpointController();
+        var formatCacheStore = new FormatCacheStore(_logger);
+        var catalogResolver = new AppleMusicCatalogResolver(_logger, formatCacheStore);
         var resolverChain = new ResolverChain(
             [
-                new AppleMusicCatalogResolver(_logger),
+                new FormatCacheResolver(formatCacheStore, _logger),
+                catalogResolver,
                 new LocalDeviceMaxResolver(
                     audioEndpointController,
                     new PlayCacheTrackFormatReader(_paths, _logger),
@@ -114,8 +121,11 @@ public partial class App : Application
             resolverChain,
             audioEndpointController,
             _logger,
-            new AppleMusicProcessController(_logger));
+            new AppleMusicProcessController(_logger),
+            formatCacheStore,
+            catalogResolver);
         _coordinator.StatusChanged += OnCoordinatorStatusChanged;
+        _coordinator.FormatCacheUpdated += OnFormatCacheUpdated;
         // Seed settings before the track source starts so target-device UI and original-format capture
         // use the user's configured selection immediately.
         _coordinator.UpdateSettings(_settings);
@@ -174,6 +184,32 @@ public partial class App : Application
         });
     }
 
+    private void OnFormatCacheUpdated(object? sender, FormatCacheUpdateEventArgs e)
+    {
+        if (_settings?.EnableSwitchToasts != true)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            var previousFormat = new AudioFormatCandidate(
+                e.PreviousEntry.SampleRateHz,
+                e.PreviousEntry.BitDepth,
+                2);
+            var updatedFormat = new AudioFormatCandidate(
+                e.UpdatedFormat.SampleRateHz,
+                e.UpdatedFormat.BitDepth,
+                2);
+            var toastTrack = _settings.IncludeTrackMetadataInSwitchToasts ? e.Track : null;
+            _switchToastService?.ShowFormatCacheUpdated(
+                _latestStatus?.ActiveDeviceName,
+                previousFormat,
+                updatedFormat,
+                toastTrack);
+        });
+    }
+
     private void OnAppUpdaterStatusChanged(object? sender, UpdateStatusSnapshot status)
     {
         Dispatcher.Invoke(() =>
@@ -197,7 +233,8 @@ public partial class App : Application
             e.PropertyName is not nameof(MainWindowViewModel.PreferClosestSampleRateMultiple) &&
             e.PropertyName is not nameof(MainWindowViewModel.DefaultBitDepth) &&
             e.PropertyName is not nameof(MainWindowViewModel.EnableSwitchToasts) &&
-            e.PropertyName is not nameof(MainWindowViewModel.IncludeTrackMetadataInSwitchToasts))
+            e.PropertyName is not nameof(MainWindowViewModel.IncludeTrackMetadataInSwitchToasts) &&
+            e.PropertyName is not nameof(MainWindowViewModel.FormatCacheRefreshDays))
         {
             return;
         }
@@ -210,6 +247,7 @@ public partial class App : Application
         _settings.DefaultBitDepth = _viewModel.DefaultBitDepth;
         _settings.EnableSwitchToasts = _viewModel.EnableSwitchToasts;
         _settings.IncludeTrackMetadataInSwitchToasts = _viewModel.IncludeTrackMetadataInSwitchToasts;
+        _settings.FormatCacheRefreshDays = _viewModel.FormatCacheRefreshDays;
         _settingsService.Save(_settings);
         _coordinator?.UpdateSettings(_settings);
         if (e.PropertyName is nameof(MainWindowViewModel.SelectedMode) or nameof(MainWindowViewModel.SelectedDeviceId))

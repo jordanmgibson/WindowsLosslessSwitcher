@@ -29,6 +29,12 @@ public static class AppDataPaths
             AppFolderName);
 
     /// <summary>
+    /// SQLite database for persisted per-track catalog format cache entries.
+    /// </summary>
+    public static string FormatCacheDatabasePath =>
+        Path.Combine(RootDirectory, "format-cache.db");
+
+    /// <summary>
     /// Moves settings.json and log files from the legacy data folder into <see cref="RootDirectory"/>.
     /// Safe to call on every startup: it only moves files that exist at the legacy location and are
     /// missing at the new one, and it never touches Velopack install content (current\, packages\,

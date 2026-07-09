@@ -153,6 +153,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     private readonly ITrackSource _trackSource;
     private readonly IMediaTransportController _mediaTransportController;
     private readonly ResolverChain _resolverChain;
+    private readonly FormatCacheStore? _formatCacheStore;
+    private readonly IFormatResolver? _catalogResolverForCacheVerification;
     private readonly IAudioEndpointController _audioEndpointController;
     private readonly DiagnosticsLogger _logger;
     private readonly IAppleMusicProcessController? _appleMusicProcessController;
@@ -202,17 +204,23 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         ResolverChain resolverChain,
         IAudioEndpointController audioEndpointController,
         DiagnosticsLogger logger,
-        IAppleMusicProcessController? appleMusicProcessController = null)
+        IAppleMusicProcessController? appleMusicProcessController = null,
+        FormatCacheStore? formatCacheStore = null,
+        IFormatResolver? catalogResolverForCacheVerification = null)
     {
         _trackSource = trackSource;
         _mediaTransportController = mediaTransportController;
         _resolverChain = resolverChain;
+        _formatCacheStore = formatCacheStore;
+        _catalogResolverForCacheVerification = catalogResolverForCacheVerification;
         _audioEndpointController = audioEndpointController;
         _logger = logger;
         _appleMusicProcessController = appleMusicProcessController;
     }
 
     public event EventHandler<SwitchingStatus>? StatusChanged;
+
+    public event EventHandler<FormatCacheUpdateEventArgs>? FormatCacheUpdated;
 
     public AppSettings Settings { get; private set; } = new();
 
@@ -559,6 +567,11 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             PublishStatusIfCurrent(generation, new SwitchingStatus("Resolver: Resolving format", targetDevice.FriendlyName, track, null, null, null));
             stage = TrackProcessingStage.ResolvingFormat;
             var resolved = await ResolveFormatAsync(track, cancellationToken);
+            if (resolved?.Source == AudioFormatSource.CachedCatalog)
+            {
+                MaybeScheduleCacheVerification(track);
+            }
+
             if (resolved is null)
             {
                 var failureReason = "No format resolver returned a result.";
@@ -1554,6 +1567,36 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
     private Task<ResolvedAudioFormat?> ResolveFormatAsync(TrackSnapshot track, CancellationToken cancellationToken) =>
         _resolverChain.ResolveAsync(track, cancellationToken);
+
+    private void MaybeScheduleCacheVerification(TrackSnapshot track)
+    {
+        if (_formatCacheStore is null ||
+            _catalogResolverForCacheVerification is null ||
+            !_formatCacheStore.TryGet(track.UniqueKey, out var entry) ||
+            entry is null ||
+            !FormatCacheVerificationService.IsVerificationDue(entry, Settings.FormatCacheRefreshDays))
+        {
+            return;
+        }
+
+        var verificationService = new FormatCacheVerificationService(
+            _formatCacheStore,
+            _catalogResolverForCacheVerification,
+            _logger);
+        _ = PublishCacheVerificationResultAsync(verificationService, track, entry);
+    }
+
+    private async Task PublishCacheVerificationResultAsync(
+        FormatCacheVerificationService verificationService,
+        TrackSnapshot track,
+        FormatCacheEntry entry)
+    {
+        var update = await verificationService.VerifyAsync(track, entry, CancellationToken.None);
+        if (update is not null)
+        {
+            FormatCacheUpdated?.Invoke(this, update);
+        }
+    }
 
     private AudioDeviceInfo? GetCurrentTargetDevice()
     {
