@@ -4,7 +4,7 @@ using WindowsLosslessSwitcher.Models;
 namespace WindowsLosslessSwitcher.Services;
 
 /// <summary>
-/// Verifies stale catalog cache entries in the background and updates the database
+/// Verifies stale catalog cache entries in the background and updates the cache
 /// if the Apple Music format has changed.
 /// </summary>
 internal sealed class FormatCacheVerificationService
@@ -40,19 +40,24 @@ internal sealed class FormatCacheVerificationService
                 return null;
             }
 
-            if (fresh.SampleRateHz == entry.SampleRateHz && fresh.BitDepth == entry.BitDepth)
+            var formatChanged = fresh.SampleRateHz != entry.SampleRateHz || fresh.BitDepth != entry.BitDepth;
+            if (!_store.TryApplyVerification(entry, fresh, out var cacheGeneration))
             {
-                _store.TouchLastVerified(track.UniqueKey, DateTimeOffset.UtcNow);
+                _logger.Info($"Format cache verification result was superseded for {track.UniqueKey}.");
+                return null;
+            }
+
+            if (!formatChanged)
+            {
                 _logger.Info(
                     $"Format cache verification confirmed {entry.BitDepth}/{entry.SampleRateHz} for {track.UniqueKey}.");
                 return null;
             }
 
-            _store.UpdateEntry(track.UniqueKey, fresh);
             _logger.Info(
                 $"Format cache verification updated {track.UniqueKey}: " +
                 $"{entry.BitDepth}/{entry.SampleRateHz} -> {fresh.BitDepth}/{fresh.SampleRateHz} (applies next playback).");
-            return new FormatCacheUpdateEventArgs(track, entry, fresh);
+            return new FormatCacheUpdateEventArgs(track, entry, fresh, cacheGeneration);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -7,38 +7,36 @@ namespace WindowsLosslessSwitcher.Tests.Services;
 
 public sealed class FormatCacheResolverTests : IDisposable
 {
-    private readonly string _databasePath;
+    private readonly string _directory;
     private readonly DiagnosticsLogger _logger;
     private readonly FormatCacheStore _store;
 
     public FormatCacheResolverTests()
     {
-        _databasePath = Path.Combine(
+        _directory = Path.Combine(
             Path.GetTempPath(),
             "WindowsLosslessSwitcher.Tests",
-            Guid.NewGuid().ToString("N"),
-            "format-cache.db");
-        _logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-        _store = new FormatCacheStore(_databasePath, _logger);
+            Guid.NewGuid().ToString("N"));
+        _logger = new DiagnosticsLogger(_directory);
+        _store = new FormatCacheStore(Path.Combine(_directory, "format-cache.json"), _logger);
     }
 
     [Fact]
     public async Task ResolveAsync_ReturnsNullOnCacheMiss()
     {
         var resolver = new FormatCacheResolver(_store, _logger);
-        var track = CreateTrack();
 
-        var result = await resolver.ResolveAsync(track, CancellationToken.None);
+        var result = await resolver.ResolveAsync(CreateTrack(), CancellationToken.None);
 
         Assert.Null(result);
     }
 
     [Fact]
-    public async Task ResolveAsync_ReturnsCachedFormatOnHit()
+    public async Task ResolveAsync_ReturnsCachedFormatAndEntryOnHit()
     {
         var track = CreateTrack();
         _store.Store(
-            track.UniqueKey,
+            FormatCacheKey.Create("us", track),
             new ResolvedAudioFormat(
                 96000,
                 24,
@@ -48,7 +46,6 @@ public sealed class FormatCacheResolverTests : IDisposable
             {
                 CatalogSongId = "song-123",
             });
-
         var resolver = new FormatCacheResolver(_store, _logger);
 
         var result = await resolver.ResolveAsync(track, CancellationToken.None);
@@ -58,6 +55,27 @@ public sealed class FormatCacheResolverTests : IDisposable
         Assert.Equal(96000, result.SampleRateHz);
         Assert.Equal(24, result.BitDepth);
         Assert.Equal("song-123", result.CatalogSongId);
+        Assert.NotNull(result.CachedCatalogEntry);
+        Assert.Equal(result.ObservedAtUtc, result.CachedCatalogEntry.LastVerifiedAtUtc);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_DoesNotReturnEntryFromAnotherStorefront()
+    {
+        var track = CreateTrack();
+        _store.Store(
+            FormatCacheKey.Create("jp", track),
+            new ResolvedAudioFormat(
+                96000,
+                24,
+                ResolutionConfidence.Exact,
+                AudioFormatSource.CatalogManifest,
+                "Catalog manifest: 24/96"));
+        var resolver = new FormatCacheResolver(_store, _logger, "us");
+
+        var result = await resolver.ResolveAsync(track, CancellationToken.None);
+
+        Assert.Null(result);
     }
 
     [Fact]
@@ -65,14 +83,13 @@ public sealed class FormatCacheResolverTests : IDisposable
     {
         var track = CreateTrack();
         _store.Store(
-            track.UniqueKey,
+            FormatCacheKey.Create("us", track),
             new ResolvedAudioFormat(
                 96000,
                 24,
                 ResolutionConfidence.Exact,
                 AudioFormatSource.CatalogManifest,
                 "Catalog manifest: 24/96"));
-
         var cacheResolver = new FormatCacheResolver(_store, _logger);
         var downstream = new RecordingResolver();
         var chain = new ResolverChain([cacheResolver, downstream]);
@@ -86,20 +103,10 @@ public sealed class FormatCacheResolverTests : IDisposable
 
     public void Dispose()
     {
-        FormatCacheStore.ReleaseConnectionsForTesting();
-        var directory = Path.GetDirectoryName(_databasePath);
-        if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+        if (Directory.Exists(_directory))
         {
-            Directory.Delete(directory, recursive: true);
+            Directory.Delete(_directory, recursive: true);
         }
-    }
-
-    [Fact]
-    public void CreateTrack_UsesExpectedUniqueKeyFormat()
-    {
-        var track = CreateTrack();
-
-        Assert.Equal("AppleMusic||Track|Artist|Album", track.UniqueKey);
     }
 
     private static TrackSnapshot CreateTrack() =>

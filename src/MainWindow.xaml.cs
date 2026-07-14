@@ -6,6 +6,7 @@ namespace WindowsLosslessSwitcher;
 
 public partial class MainWindow : Window
 {
+    private const double PreferredMinHeight = 640;
     private readonly MainWindowViewModel _viewModel;
     private bool _allowClose;
 
@@ -13,8 +14,10 @@ public partial class MainWindow : Window
     {
         _viewModel = viewModel;
         InitializeComponent();
+        UpdateHeightBounds();
         DataContext = _viewModel;
         Closing += OnClosing;
+        IsVisibleChanged += (_, _) => UpdateHeightBounds();
     }
 
     public event Action? WindowHidden;
@@ -43,6 +46,13 @@ public partial class MainWindow : Window
         e.Cancel = true;
         Hide();
         WindowHidden?.Invoke();
+    }
+
+    private void UpdateHeightBounds()
+    {
+        var availableHeight = Math.Max(320, SystemParameters.WorkArea.Height - 32);
+        MinHeight = Math.Min(PreferredMinHeight, availableHeight);
+        MaxHeight = availableHeight;
     }
 
     protected override void OnInitialized(EventArgs e)

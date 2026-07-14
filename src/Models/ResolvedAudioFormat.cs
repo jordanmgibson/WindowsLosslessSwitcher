@@ -39,4 +39,6 @@ public sealed record ResolvedAudioFormat(
     /// Gets the Apple Music catalog song id when the format was resolved from the catalog.
     /// </summary>
     public string? CatalogSongId { get; init; }
+
+    internal FormatCacheEntry? CachedCatalogEntry { get; init; }
 }

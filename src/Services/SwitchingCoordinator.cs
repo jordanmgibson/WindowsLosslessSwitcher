@@ -153,18 +153,21 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     private readonly ITrackSource _trackSource;
     private readonly IMediaTransportController _mediaTransportController;
     private readonly ResolverChain _resolverChain;
-    private readonly FormatCacheStore? _formatCacheStore;
-    private readonly IFormatResolver? _catalogResolverForCacheVerification;
+    private readonly FormatCacheVerificationService? _formatCacheVerificationService;
     private readonly IAudioEndpointController _audioEndpointController;
     private readonly DiagnosticsLogger _logger;
     private readonly IAppleMusicProcessController? _appleMusicProcessController;
     private readonly SemaphoreSlim _switchLock = new(1, 1);
     private readonly object _processingSync = new();
     private readonly object _activeTaskSync = new();
+    private readonly object _cacheVerificationSync = new();
     private readonly HashSet<Task> _activeTrackTasks = [];
+    private readonly Dictionary<string, Task> _activeCacheVerifications = new(StringComparer.Ordinal);
+    private readonly CancellationTokenSource _cacheVerificationLifetimeCts = new();
     private CancellationTokenSource? _currentTrackCts;
     private string? _currentTrackKey;
     private long _currentTrackGeneration;
+    private bool _cacheVerificationStopping;
 
     // Device muted by the coordinator to silence pre-switch playback. Ownership transfers to a
     // superseding track's processing; cleared on unmute. Only touched while holding _switchLock
@@ -211,8 +214,14 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         _trackSource = trackSource;
         _mediaTransportController = mediaTransportController;
         _resolverChain = resolverChain;
-        _formatCacheStore = formatCacheStore;
-        _catalogResolverForCacheVerification = catalogResolverForCacheVerification;
+        if (formatCacheStore is not null && catalogResolverForCacheVerification is not null)
+        {
+            _formatCacheVerificationService = new FormatCacheVerificationService(
+                formatCacheStore,
+                catalogResolverForCacheVerification,
+                logger);
+        }
+
         _audioEndpointController = audioEndpointController;
         _logger = logger;
         _appleMusicProcessController = appleMusicProcessController;
@@ -327,10 +336,19 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _trackSource.TrackChanged -= OnTrackChanged;
+        Task[] cacheVerificationTasks;
+        lock (_cacheVerificationSync)
+        {
+            _cacheVerificationStopping = true;
+            cacheVerificationTasks = _activeCacheVerifications.Values.ToArray();
+        }
+
+        _cacheVerificationLifetimeCts.Cancel();
         _watchdogCts?.Cancel();
         CancelCurrentTrackProcessing();
         await _trackSource.DisposeAsync();
         await AwaitActiveTrackTasksAsync();
+        await AwaitCacheVerificationTasksAsync(cacheVerificationTasks);
         if (_watchdogTask is not null)
         {
             try
@@ -344,6 +362,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         }
 
         _watchdogCts?.Dispose();
+        _cacheVerificationLifetimeCts.Dispose();
 
         // Never exit with the user's device muted by us.
         UnmuteTargetDeviceAfterProcessing();
@@ -569,7 +588,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             var resolved = await ResolveFormatAsync(track, cancellationToken);
             if (resolved?.Source == AudioFormatSource.CachedCatalog)
             {
-                MaybeScheduleCacheVerification(track);
+                MaybeScheduleCacheVerification(track, resolved);
             }
 
             if (resolved is null)
@@ -1568,33 +1587,89 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     private Task<ResolvedAudioFormat?> ResolveFormatAsync(TrackSnapshot track, CancellationToken cancellationToken) =>
         _resolverChain.ResolveAsync(track, cancellationToken);
 
-    private void MaybeScheduleCacheVerification(TrackSnapshot track)
+    private void MaybeScheduleCacheVerification(TrackSnapshot track, ResolvedAudioFormat resolved)
     {
-        if (_formatCacheStore is null ||
-            _catalogResolverForCacheVerification is null ||
-            !_formatCacheStore.TryGet(track.UniqueKey, out var entry) ||
+        var entry = resolved.CachedCatalogEntry;
+        if (_formatCacheVerificationService is null ||
             entry is null ||
             !FormatCacheVerificationService.IsVerificationDue(entry, Settings.FormatCacheRefreshDays))
         {
             return;
         }
 
-        var verificationService = new FormatCacheVerificationService(
-            _formatCacheStore,
-            _catalogResolverForCacheVerification,
-            _logger);
-        _ = PublishCacheVerificationResultAsync(verificationService, track, entry);
+        Task task;
+        lock (_cacheVerificationSync)
+        {
+            if (_cacheVerificationStopping || _activeCacheVerifications.ContainsKey(entry.UniqueKey))
+            {
+                return;
+            }
+
+            task = PublishCacheVerificationResultAsync(
+                _formatCacheVerificationService,
+                track,
+                entry,
+                _cacheVerificationLifetimeCts.Token);
+            _activeCacheVerifications.Add(entry.UniqueKey, task);
+        }
+
+        _ = task.ContinueWith(
+            _ => CacheVerificationCompleted(entry.UniqueKey, task),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private async Task PublishCacheVerificationResultAsync(
         FormatCacheVerificationService verificationService,
         TrackSnapshot track,
-        FormatCacheEntry entry)
+        FormatCacheEntry entry,
+        CancellationToken cancellationToken)
     {
-        var update = await verificationService.VerifyAsync(track, entry, CancellationToken.None);
-        if (update is not null)
+        try
         {
-            FormatCacheUpdated?.Invoke(this, update);
+            var update = await verificationService.VerifyAsync(track, entry, cancellationToken);
+            if (update is not null && !cancellationToken.IsCancellationRequested)
+            {
+                FormatCacheUpdated?.Invoke(this, update);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Coordinator disposal cancels outstanding cache verification.
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Format cache verification task failed for {track.UniqueKey}: {ex.Message}");
+        }
+    }
+
+    private void CacheVerificationCompleted(string uniqueKey, Task task)
+    {
+        lock (_cacheVerificationSync)
+        {
+            if (_activeCacheVerifications.TryGetValue(uniqueKey, out var current) &&
+                ReferenceEquals(current, task))
+            {
+                _activeCacheVerifications.Remove(uniqueKey);
+            }
+        }
+    }
+
+    private static async Task AwaitCacheVerificationTasksAsync(Task[] tasks)
+    {
+        if (tasks.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch
+        {
+            // Each owned task observes and logs its own failure before completing.
         }
     }
 

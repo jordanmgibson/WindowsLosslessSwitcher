@@ -8,6 +8,8 @@ namespace WindowsLosslessSwitcher.Services;
 public sealed class AppleMusicCatalogResolver : IFormatResolver
 {
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    internal const string DefaultStorefront = "us";
+
     // Number of search results to request per query attempt. 25 gives enough breadth to find
     // live, deluxe, and remaster variants without requesting an excessively large payload.
     private const int SearchResultLimit = 25;
@@ -19,6 +21,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
     // match. The catalog runs first and is the authoritative cloud-vs-local test: weaker matches fall
     // through to the device-max resolver, so a local file with merely similar metadata is not treated
     // as the catalog track and instead plays at the device's highest format.
+    // Bump FormatCacheStore.CatalogResolverVersion when this or related matching logic changes.
     private const int MinimumAcceptedScore = 150;
 
     private readonly DiagnosticsLogger _logger;
@@ -30,7 +33,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
     private DateTimeOffset _developerTokenExpiresAtUtc;
 
     public AppleMusicCatalogResolver(DiagnosticsLogger logger, FormatCacheStore? formatCacheStore = null)
-        : this(logger, formatCacheStore, SendAsync, "us")
+        : this(logger, formatCacheStore, SendAsync, DefaultStorefront)
     {
     }
 
@@ -48,10 +51,11 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         Func<HttpRequestMessage, CancellationToken, Task<string?>> sendAsync,
         string storefront)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storefront);
         _logger = logger;
         _formatCacheStore = formatCacheStore;
         _sendAsync = sendAsync;
-        _storefront = storefront;
+        _storefront = storefront.Trim().ToLowerInvariant();
     }
 
     public string Name => "AppleMusicCatalogResolver";
@@ -133,7 +137,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
 
         // Cache successful lookups immediately so results aren't lost if track processing
         // is cancelled (e.g., the user skips the track) before it reaches the coordinator.
-        _formatCacheStore?.Store(normalizedTrack.UniqueKey, resolved);
+        _formatCacheStore?.Store(FormatCacheKey.Create(_storefront, normalizedTrack), resolved);
         return resolved;
     }
 

@@ -277,26 +277,34 @@ public sealed class AppleMusicCatalogResolverTests
             return Task.FromResult<string?>($"var t = '{fakeJwt}';");
         }
 
-        var databasePath = Path.Combine(
+        var directory = Path.Combine(
             Path.GetTempPath(),
             "WindowsLosslessSwitcher.Tests",
-            Guid.NewGuid().ToString("N"),
-            "format-cache.db");
-        var logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-        var store = new FormatCacheStore(databasePath, logger);
-        var resolver = new AppleMusicCatalogResolver(logger, store, SendAsync, "us");
-        var track = CreateTrack("Track", "Artist");
+            Guid.NewGuid().ToString("N"));
 
-        var result = await resolver.ResolveAsync(track, CancellationToken.None);
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var store = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            var resolver = new AppleMusicCatalogResolver(logger, store, SendAsync, "us");
+            var track = CreateTrack("Track", "Artist");
 
-        Assert.NotNull(result);
-        Assert.True(store.TryGet(track.UniqueKey, out var entry));
-        Assert.NotNull(entry);
-        Assert.Equal("12345", entry.CatalogSongId);
-        Assert.Equal(44100, entry.SampleRateHz);
-        Assert.Equal(16, entry.BitDepth);
+            var result = await resolver.ResolveAsync(track, CancellationToken.None);
 
-        FormatCacheStore.ReleaseConnectionsForTesting();
+            Assert.NotNull(result);
+            Assert.True(store.TryGet(FormatCacheKey.Create("us", track), out var entry));
+            Assert.NotNull(entry);
+            Assert.Equal("12345", entry.CatalogSongId);
+            Assert.Equal(44100, entry.SampleRateHz);
+            Assert.Equal(16, entry.BitDepth);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

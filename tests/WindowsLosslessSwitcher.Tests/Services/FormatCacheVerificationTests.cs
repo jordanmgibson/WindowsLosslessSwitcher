@@ -8,19 +8,18 @@ namespace WindowsLosslessSwitcher.Tests.Services;
 
 public sealed class FormatCacheVerificationTests : IDisposable
 {
-    private readonly string _databasePath;
+    private readonly string _directory;
     private readonly DiagnosticsLogger _logger;
     private readonly FormatCacheStore _store;
 
     public FormatCacheVerificationTests()
     {
-        _databasePath = Path.Combine(
+        _directory = Path.Combine(
             Path.GetTempPath(),
             "WindowsLosslessSwitcher.Tests",
-            Guid.NewGuid().ToString("N"),
-            "format-cache.db");
-        _logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-        _store = new FormatCacheStore(_databasePath, _logger);
+            Guid.NewGuid().ToString("N"));
+        _logger = new DiagnosticsLogger(_directory);
+        _store = new FormatCacheStore(Path.Combine(_directory, "format-cache.json"), _logger);
     }
 
     [Fact]
@@ -43,10 +42,7 @@ public sealed class FormatCacheVerificationTests : IDisposable
     public async Task VerifyAsync_UpdatesStoreAndReturnsEventArgsWhenFormatChanges()
     {
         var track = CreateTrack();
-        _store.Store(track.UniqueKey, CreateCatalogFormat(96000, 24, "song-123"));
-        Assert.True(_store.TryGet(track.UniqueKey, out var entry));
-        Assert.NotNull(entry);
-
+        var entry = StoreStaleEntry(track, CreateCatalogFormat(96000, 24, "song-123"));
         var service = new FormatCacheVerificationService(
             _store,
             new DelegateResolver((_, _) =>
@@ -58,44 +54,45 @@ public sealed class FormatCacheVerificationTests : IDisposable
         Assert.NotNull(update);
         Assert.Equal(96000, update.PreviousEntry.SampleRateHz);
         Assert.Equal(192000, update.UpdatedFormat.SampleRateHz);
-        Assert.True(_store.TryGet(track.UniqueKey, out var stored));
+        Assert.True(_store.TryGet(entry.UniqueKey, out var stored));
         Assert.NotNull(stored);
+        Assert.Equal(entry.CachedAtUtc, stored.CachedAtUtc);
         Assert.Equal(192000, stored.SampleRateHz);
+        Assert.Equal(_store.ClearGeneration, update.CacheGeneration);
+        Assert.True(_store.Clear());
+        Assert.NotEqual(_store.ClearGeneration, update.CacheGeneration);
     }
 
     [Fact]
-    public async Task VerifyAsync_TouchesLastVerifiedWithoutEventWhenFormatMatches()
+    public async Task VerifyAsync_RefreshesMetadataWithoutEventWhenFormatMatches()
     {
         var track = CreateTrack();
-        _store.Store(track.UniqueKey, CreateCatalogFormat(96000, 24, "song-123"));
-        Assert.True(_store.TryGet(track.UniqueKey, out var entry));
-        Assert.NotNull(entry);
-
-        var staleVerifiedAt = DateTimeOffset.UtcNow.AddDays(-40);
-        _store.TouchLastVerified(track.UniqueKey, staleVerifiedAt);
-
+        var entry = StoreStaleEntry(track, CreateCatalogFormat(96000, 24, "song-123"));
+        var updated = CreateCatalogFormat(96000, 24, "song-456") with
+        {
+            Description = "updated description",
+        };
         var service = new FormatCacheVerificationService(
             _store,
-            new DelegateResolver((_, _) =>
-                Task.FromResult<ResolvedAudioFormat?>(CreateCatalogFormat(96000, 24, "song-123"))),
+            new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(updated)),
             _logger);
 
         var update = await service.VerifyAsync(track, entry, CancellationToken.None);
 
         Assert.Null(update);
-        Assert.True(_store.TryGet(track.UniqueKey, out var stored));
+        Assert.True(_store.TryGet(entry.UniqueKey, out var stored));
         Assert.NotNull(stored);
-        Assert.True(stored.LastVerifiedAtUtc > staleVerifiedAt);
+        Assert.Equal(entry.CachedAtUtc, stored.CachedAtUtc);
+        Assert.True(stored.LastVerifiedAtUtc > entry.LastVerifiedAtUtc);
+        Assert.Equal("song-456", stored.CatalogSongId);
+        Assert.Equal("updated description", stored.Description);
     }
 
     [Fact]
-    public async Task VerifyAsync_ReturnsNullWhenCatalogLookupFails()
+    public async Task VerifyAsync_ReturnsNullWithoutMutationWhenCatalogLookupFails()
     {
         var track = CreateTrack();
-        _store.Store(track.UniqueKey, CreateCatalogFormat(96000, 24, "song-123"));
-        Assert.True(_store.TryGet(track.UniqueKey, out var entry));
-        Assert.NotNull(entry);
-
+        var entry = StoreStaleEntry(track, CreateCatalogFormat(96000, 24, "song-123"));
         var service = new FormatCacheVerificationService(
             _store,
             new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(null)),
@@ -104,24 +101,54 @@ public sealed class FormatCacheVerificationTests : IDisposable
         var update = await service.VerifyAsync(track, entry, CancellationToken.None);
 
         Assert.Null(update);
-        Assert.True(_store.TryGet(track.UniqueKey, out var stored));
-        Assert.NotNull(stored);
-        Assert.Equal(96000, stored.SampleRateHz);
+        Assert.True(_store.TryGet(entry.UniqueKey, out var stored));
+        Assert.Equal(entry, stored);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenCacheClearedDuringLookup_DoesNotRecreateEntryOrReturnUpdate()
+    {
+        var track = CreateTrack();
+        var entry = StoreStaleEntry(track, CreateCatalogFormat(96000, 24, "song-123"));
+        var lookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lookupResult = new TaskCompletionSource<ResolvedAudioFormat?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FormatCacheVerificationService(
+            _store,
+            new DelegateResolver(async (_, _) =>
+            {
+                lookupStarted.TrySetResult();
+                return await lookupResult.Task;
+            }),
+            _logger);
+
+        var verificationTask = service.VerifyAsync(track, entry, CancellationToken.None);
+        await lookupStarted.Task;
+        Assert.True(_store.Clear());
+        lookupResult.SetResult(CreateCatalogFormat(192000, 24, "song-999"));
+
+        Assert.Null(await verificationTask);
+        Assert.False(_store.TryGet(entry.UniqueKey, out _));
     }
 
     public void Dispose()
     {
-        FormatCacheStore.ReleaseConnectionsForTesting();
-        var directory = Path.GetDirectoryName(_databasePath);
-        if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+        if (Directory.Exists(_directory))
         {
-            Directory.Delete(directory, recursive: true);
+            Directory.Delete(_directory, recursive: true);
         }
+    }
+
+    private FormatCacheEntry StoreStaleEntry(TrackSnapshot track, ResolvedAudioFormat format)
+    {
+        var cacheKey = FormatCacheKey.Create("us", track);
+        Assert.True(_store.Store(cacheKey, format, DateTimeOffset.UtcNow.AddDays(-40)));
+        Assert.True(_store.TryGet(cacheKey, out var entry));
+        return Assert.IsType<FormatCacheEntry>(entry);
     }
 
     private static FormatCacheEntry CreateEntry(DateTimeOffset lastVerifiedAtUtc) =>
         new(
-            "AppleMusic||Track|Artist|Album",
+            "cache-key",
             "song-123",
             96000,
             24,

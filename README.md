@@ -62,6 +62,8 @@ Apple Music on Windows has no exclusive mode. A clean path through the shared-mo
 
 Apple Music for Windows reports the current track through the Windows media session APIs. On each track change, the app resolves the most likely playback format in three layers:
 
+Successful catalog matches are kept in a versioned local cache, scoped to the Apple Music storefront, so repeat plays skip the network lookup. Stale entries are re-checked in the background and can be cleared from the app window.
+
 1. **Catalog match** — the track is looked up in Apple Music's web catalog; a confident match yields the exact lossless format (for example 24-bit / 96 kHz).
 2. **Local file match** — local-library files and tracks the catalog cannot identify are matched to the actual format of the file in Apple Music's cache.
 3. **Tier fallback** — when neither layer can identify the track, the device is set to a format derived from your Apple Music audio-quality setting (High-Res Lossless → 24-bit / 192 kHz, Lossless → 24-bit / 48 kHz), so the applied format always matches what the app resolved.
@@ -75,7 +77,7 @@ Do also note that:
 
 ## Settings
 
-Settings are stored at `%APPDATA%\WindowsLosslessSwitcher\settings.json`, and diagnostics logs are written to the same folder. (Versions before 1.0.0-beta.1 used `%LOCALAPPDATA%\WindowsLosslessSwitcher`; existing settings and logs are moved over automatically on first launch.) The common options are available from the app's window; the full file reference:
+Settings are stored at `%APPDATA%\WindowsLosslessSwitcher\settings.json`. The catalog cache `format-cache.json` and diagnostics logs are written to the same folder. (Versions before 1.0.0-beta.1 used `%LOCALAPPDATA%\WindowsLosslessSwitcher`; existing settings and logs are moved over automatically on first launch.) The common options are available from the app's window; the full file reference:
 
 ```jsonc
 {
@@ -107,6 +109,10 @@ Settings are stored at `%APPDATA%\WindowsLosslessSwitcher\settings.json`, and di
 
   // Include track title and artist in switch toasts. Requires enableSwitchToasts to be true.
   "includeTrackMetadataInSwitchToasts": false,
+
+  // Re-check cached catalog format on playback after this many days.
+  // Supported values: 1, 7, 14, 30, 60, 90, 180, or 365.
+  "formatCacheRefreshDays": 30,
 
   // Write verbose per-operation diagnostic entries to the log file.
   // Disable if the log grows too quickly during normal use.

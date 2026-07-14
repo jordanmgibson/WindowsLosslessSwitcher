@@ -3,7 +3,7 @@ using System.IO;
 namespace WindowsLosslessSwitcher.Services;
 
 /// <summary>
-/// Defines where the app stores its data (settings.json and logs) and migrates data left behind
+/// Defines where the app stores its data (settings.json, format-cache.json, and logs) and migrates data left behind
 /// at the legacy location by older builds.
 /// </summary>
 public static class AppDataPaths
@@ -29,10 +29,10 @@ public static class AppDataPaths
             AppFolderName);
 
     /// <summary>
-    /// SQLite database for persisted per-track catalog format cache entries.
+    /// JSON file for persisted per-track catalog format cache entries.
     /// </summary>
-    public static string FormatCacheDatabasePath =>
-        Path.Combine(RootDirectory, "format-cache.db");
+    public static string FormatCachePath =>
+        Path.Combine(RootDirectory, "format-cache.json");
 
     /// <summary>
     /// Moves settings.json and log files from the legacy data folder into <see cref="RootDirectory"/>.

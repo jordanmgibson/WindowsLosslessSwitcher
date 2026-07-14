@@ -1,272 +1,323 @@
-using System.Globalization;
 using System.IO;
-using Microsoft.Data.Sqlite;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using WindowsLosslessSwitcher.Models;
 
 namespace WindowsLosslessSwitcher.Services;
 
 /// <summary>
-/// Persists catalog format resolutions in SQLite, keyed by <see cref="TrackSnapshot.UniqueKey"/>.
+/// Persists catalog format resolutions in a versioned JSON cache.
 /// </summary>
 public sealed class FormatCacheStore
 {
-    private readonly string _databasePath;
+    private const int SchemaVersion = 1;
+
+    // Bump this whenever catalog matching, metadata normalization, cache-key construction,
+    // or manifest format selection changes in a way that can alter a cached result.
+    internal const int CatalogResolverVersion = 1;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
+    private readonly string _cachePath;
     private readonly DiagnosticsLogger? _logger;
     private readonly object _sync = new();
+    private Dictionary<string, FormatCacheEntry> _entries = new(StringComparer.Ordinal);
     private bool _initialized;
+    private long _clearGeneration;
 
     public FormatCacheStore()
-        : this(AppDataPaths.FormatCacheDatabasePath, null)
+        : this(AppDataPaths.FormatCachePath, null)
     {
     }
 
     public FormatCacheStore(DiagnosticsLogger logger)
-        : this(AppDataPaths.FormatCacheDatabasePath, logger)
+        : this(AppDataPaths.FormatCachePath, logger)
     {
     }
 
-    internal FormatCacheStore(string databasePath, DiagnosticsLogger? logger)
+    internal FormatCacheStore(string cachePath, DiagnosticsLogger? logger)
     {
-        _databasePath = databasePath;
+        _cachePath = cachePath;
         _logger = logger;
     }
 
     public bool TryGet(string uniqueKey, out FormatCacheEntry? entry)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(uniqueKey);
-        EnsureInitialized();
 
         lock (_sync)
         {
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                """
-                SELECT unique_key, catalog_song_id, sample_rate_hz, bit_depth, confidence, description, cached_at_utc, last_verified_at_utc
-                FROM format_cache
-                WHERE unique_key = $uniqueKey
-                LIMIT 1;
-                """;
-            command.Parameters.AddWithValue("$uniqueKey", uniqueKey);
-
-            using var reader = command.ExecuteReader();
-            if (!reader.Read())
-            {
-                entry = null;
-                return false;
-            }
-
-            entry = ReadEntry(reader);
-            return true;
+            EnsureInitialized();
+            return _entries.TryGetValue(uniqueKey, out entry);
         }
     }
 
-    public void Store(string uniqueKey, ResolvedAudioFormat format)
+    public bool Store(string uniqueKey, ResolvedAudioFormat format)
+        => Store(uniqueKey, format, DateTimeOffset.UtcNow);
+
+    internal bool Store(string uniqueKey, ResolvedAudioFormat format, DateTimeOffset storedAtUtc)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(uniqueKey);
         ArgumentNullException.ThrowIfNull(format);
         if (format.Source != AudioFormatSource.CatalogManifest)
         {
-            return;
+            return false;
         }
-
-        var now = DateTimeOffset.UtcNow;
-        Upsert(uniqueKey, format, now, now);
-        _logger?.Info(
-            $"Format cached for '{uniqueKey}': {format.BitDepth}/{format.SampleRateHz} " +
-            $"(catalogSongId={format.CatalogSongId ?? "none"}).");
-    }
-
-    public void UpdateEntry(string uniqueKey, ResolvedAudioFormat format)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(uniqueKey);
-        ArgumentNullException.ThrowIfNull(format);
-        if (format.Source is not (AudioFormatSource.CatalogManifest or AudioFormatSource.CachedCatalog))
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        EnsureInitialized();
 
         lock (_sync)
         {
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                """
-                UPDATE format_cache
-                SET catalog_song_id = $catalogSongId,
-                    sample_rate_hz = $sampleRateHz,
-                    bit_depth = $bitDepth,
-                    confidence = $confidence,
-                    description = $description,
-                    last_verified_at_utc = $lastVerifiedAtUtc
-                WHERE unique_key = $uniqueKey;
-                """;
-            command.Parameters.AddWithValue("$uniqueKey", uniqueKey);
-            command.Parameters.AddWithValue("$catalogSongId", (object?)format.CatalogSongId ?? DBNull.Value);
-            command.Parameters.AddWithValue("$sampleRateHz", format.SampleRateHz);
-            command.Parameters.AddWithValue("$bitDepth", format.BitDepth);
-            command.Parameters.AddWithValue("$confidence", (int)format.Confidence);
-            command.Parameters.AddWithValue("$description", format.Description);
-            command.Parameters.AddWithValue("$lastVerifiedAtUtc", FormatTimestamp(now));
+            EnsureInitialized();
+            var candidate = CopyEntries();
+            var cachedAtUtc = candidate.TryGetValue(uniqueKey, out var current)
+                ? current.CachedAtUtc
+                : storedAtUtc;
+            candidate[uniqueKey] = CreateEntry(uniqueKey, format, cachedAtUtc, storedAtUtc);
 
-            if (command.ExecuteNonQuery() == 0)
+            if (!TryPersist(candidate))
             {
-                Upsert(uniqueKey, format, now, now);
+                return false;
+            }
+
+            _entries = candidate;
+        }
+
+        TryLogInfo(
+            $"Format cached for '{uniqueKey}': {format.BitDepth}/{format.SampleRateHz} " +
+            $"(catalogSongId={format.CatalogSongId ?? "none"}).");
+        return true;
+    }
+
+    internal long ClearGeneration
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _clearGeneration;
             }
         }
     }
 
-    public void TouchLastVerified(string uniqueKey, DateTimeOffset lastVerifiedAtUtc)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(uniqueKey);
-        EnsureInitialized();
+    internal bool TryApplyVerification(FormatCacheEntry expectedEntry, ResolvedAudioFormat format) =>
+        TryApplyVerification(expectedEntry, format, out _);
 
+    internal bool TryApplyVerification(
+        FormatCacheEntry expectedEntry,
+        ResolvedAudioFormat format,
+        out long clearGeneration)
+    {
+        ArgumentNullException.ThrowIfNull(expectedEntry);
+        ArgumentNullException.ThrowIfNull(format);
+        clearGeneration = 0;
+        if (format.Source != AudioFormatSource.CatalogManifest)
+        {
+            return false;
+        }
+
+        var now = DateTimeOffset.UtcNow;
         lock (_sync)
         {
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                """
-                UPDATE format_cache
-                SET last_verified_at_utc = $lastVerifiedAtUtc
-                WHERE unique_key = $uniqueKey;
-                """;
-            command.Parameters.AddWithValue("$uniqueKey", uniqueKey);
-            command.Parameters.AddWithValue("$lastVerifiedAtUtc", FormatTimestamp(lastVerifiedAtUtc));
-            command.ExecuteNonQuery();
+            EnsureInitialized();
+            if (!_entries.TryGetValue(expectedEntry.UniqueKey, out var current) || current != expectedEntry)
+            {
+                return false;
+            }
+
+            var candidate = CopyEntries();
+            candidate[expectedEntry.UniqueKey] = CreateEntry(
+                expectedEntry.UniqueKey,
+                format,
+                current.CachedAtUtc,
+                now);
+
+            if (!TryPersist(candidate))
+            {
+                return false;
+            }
+
+            _entries = candidate;
+            clearGeneration = _clearGeneration;
+            return true;
         }
     }
 
-    private void Upsert(
-        string uniqueKey,
-        ResolvedAudioFormat format,
-        DateTimeOffset cachedAtUtc,
-        DateTimeOffset lastVerifiedAtUtc)
+    public bool Clear()
     {
-        EnsureInitialized();
-
         lock (_sync)
         {
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                """
-                INSERT INTO format_cache (
-                    unique_key,
-                    catalog_song_id,
-                    sample_rate_hz,
-                    bit_depth,
-                    confidence,
-                    description,
-                    cached_at_utc,
-                    last_verified_at_utc)
-                VALUES (
-                    $uniqueKey,
-                    $catalogSongId,
-                    $sampleRateHz,
-                    $bitDepth,
-                    $confidence,
-                    $description,
-                    $cachedAtUtc,
-                    $lastVerifiedAtUtc)
-                ON CONFLICT(unique_key) DO UPDATE SET
-                    catalog_song_id = excluded.catalog_song_id,
-                    sample_rate_hz = excluded.sample_rate_hz,
-                    bit_depth = excluded.bit_depth,
-                    confidence = excluded.confidence,
-                    description = excluded.description,
-                    cached_at_utc = excluded.cached_at_utc,
-                    last_verified_at_utc = excluded.last_verified_at_utc;
-                """;
-            command.Parameters.AddWithValue("$uniqueKey", uniqueKey);
-            command.Parameters.AddWithValue("$catalogSongId", (object?)format.CatalogSongId ?? DBNull.Value);
-            command.Parameters.AddWithValue("$sampleRateHz", format.SampleRateHz);
-            command.Parameters.AddWithValue("$bitDepth", format.BitDepth);
-            command.Parameters.AddWithValue("$confidence", (int)format.Confidence);
-            command.Parameters.AddWithValue("$description", format.Description);
-            command.Parameters.AddWithValue("$cachedAtUtc", FormatTimestamp(cachedAtUtc));
-            command.Parameters.AddWithValue("$lastVerifiedAtUtc", FormatTimestamp(lastVerifiedAtUtc));
-            command.ExecuteNonQuery();
+            EnsureInitialized();
+            var candidate = new Dictionary<string, FormatCacheEntry>(StringComparer.Ordinal);
+            if (!TryPersist(candidate))
+            {
+                return false;
+            }
+
+            _entries = candidate;
+            _clearGeneration++;
         }
+
+        TryLogInfo("Catalog format cache cleared.");
+        return true;
     }
 
     private void EnsureInitialized()
     {
-        lock (_sync)
+        if (_initialized)
         {
-            if (_initialized)
+            return;
+        }
+
+        _initialized = true;
+        if (!File.Exists(_cachePath))
+        {
+            return;
+        }
+
+        try
+        {
+            using var stream = new FileStream(_cachePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var document = JsonSerializer.Deserialize<FormatCacheDocument>(stream, JsonOptions);
+            if (document is null ||
+                document.SchemaVersion != SchemaVersion ||
+                document.CatalogResolverVersion != CatalogResolverVersion)
             {
+                TryLogWarning("Catalog format cache has an unsupported version and will be rebuilt.");
                 return;
             }
 
-            var directory = Path.GetDirectoryName(_databasePath);
+            if (!TryValidateEntries(document.Entries, out var entries))
+            {
+                TryLogWarning("Catalog format cache contains invalid entries and will be rebuilt.");
+                return;
+            }
+
+            _entries = entries;
+        }
+        catch (Exception ex)
+        {
+            TryLogWarning($"Catalog format cache could not be loaded and will be rebuilt: {ex.Message}");
+        }
+    }
+
+    private bool TryPersist(Dictionary<string, FormatCacheEntry> entries)
+    {
+        var temporaryPath = $"{_cachePath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            var directory = Path.GetDirectoryName(_cachePath);
             if (!string.IsNullOrWhiteSpace(directory))
             {
                 Directory.CreateDirectory(directory);
             }
 
-            using var connection = OpenConnection();
-            ExecuteNonQuery(
-                connection,
-                """
-                CREATE TABLE IF NOT EXISTS format_cache (
-                    unique_key TEXT PRIMARY KEY NOT NULL,
-                    catalog_song_id TEXT,
-                    sample_rate_hz INTEGER NOT NULL,
-                    bit_depth INTEGER NOT NULL,
-                    confidence INTEGER NOT NULL,
-                    description TEXT NOT NULL,
-                    cached_at_utc TEXT NOT NULL,
-                    last_verified_at_utc TEXT NOT NULL
-                );
-                """);
-            ExecuteNonQuery(
-                connection,
-                """
-                CREATE INDEX IF NOT EXISTS idx_format_cache_catalog_song_id
-                    ON format_cache(catalog_song_id)
-                    WHERE catalog_song_id IS NOT NULL;
-                """);
-            _initialized = true;
+            var document = new FormatCacheDocument(SchemaVersion, CatalogResolverVersion, entries);
+            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(stream, document, JsonOptions);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporaryPath, _cachePath, overwrite: true);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TryLogWarning($"Catalog format cache could not be saved: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch
+            {
+                // A leftover temporary cache file is harmless and can be removed on a later run.
+            }
         }
     }
 
-    internal static void ReleaseConnectionsForTesting()
-    {
-        SqliteConnection.ClearAllPools();
-    }
+    private Dictionary<string, FormatCacheEntry> CopyEntries() =>
+        new(_entries, StringComparer.Ordinal);
 
-    private SqliteConnection OpenConnection()
-    {
-        var connection = new SqliteConnection($"Data Source={_databasePath}");
-        connection.Open();
-        return connection;
-    }
-
-    private static FormatCacheEntry ReadEntry(SqliteDataReader reader) =>
+    private static FormatCacheEntry CreateEntry(
+        string uniqueKey,
+        ResolvedAudioFormat format,
+        DateTimeOffset cachedAtUtc,
+        DateTimeOffset lastVerifiedAtUtc) =>
         new(
-            reader.GetString(0),
-            reader.IsDBNull(1) ? null : reader.GetString(1),
-            reader.GetInt32(2),
-            reader.GetInt32(3),
-            (ResolutionConfidence)reader.GetInt32(4),
-            reader.GetString(5),
-            ParseTimestamp(reader.GetString(6)),
-            ParseTimestamp(reader.GetString(7)));
+            uniqueKey,
+            format.CatalogSongId,
+            format.SampleRateHz,
+            format.BitDepth,
+            format.Confidence,
+            format.Description,
+            cachedAtUtc,
+            lastVerifiedAtUtc);
 
-    private static string FormatTimestamp(DateTimeOffset value) =>
-        value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
-
-    private static DateTimeOffset ParseTimestamp(string value) =>
-        DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
-
-    private static void ExecuteNonQuery(SqliteConnection connection, string sql)
+    private static bool TryValidateEntries(
+        Dictionary<string, FormatCacheEntry>? persistedEntries,
+        out Dictionary<string, FormatCacheEntry> entries)
     {
-        using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.ExecuteNonQuery();
+        entries = new Dictionary<string, FormatCacheEntry>(StringComparer.Ordinal);
+        if (persistedEntries is null)
+        {
+            return false;
+        }
+
+        foreach (var pair in persistedEntries)
+        {
+            var entry = pair.Value;
+            if (string.IsNullOrWhiteSpace(pair.Key) ||
+                entry is null ||
+                !string.Equals(pair.Key, entry.UniqueKey, StringComparison.Ordinal) ||
+                entry.SampleRateHz <= 0 ||
+                entry.BitDepth <= 0 ||
+                !Enum.IsDefined(entry.Confidence) ||
+                string.IsNullOrWhiteSpace(entry.Description) ||
+                entry.CachedAtUtc == default ||
+                entry.LastVerifiedAtUtc == default)
+            {
+                return false;
+            }
+
+            entries.Add(pair.Key, entry);
+        }
+
+        return true;
     }
+
+    private void TryLogInfo(string message)
+    {
+        try
+        {
+            _logger?.Info(message);
+        }
+        catch
+        {
+        }
+    }
+
+    private void TryLogWarning(string message)
+    {
+        try
+        {
+            _logger?.Warn(message);
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed record FormatCacheDocument(
+        int SchemaVersion,
+        int CatalogResolverVersion,
+        Dictionary<string, FormatCacheEntry> Entries);
 }

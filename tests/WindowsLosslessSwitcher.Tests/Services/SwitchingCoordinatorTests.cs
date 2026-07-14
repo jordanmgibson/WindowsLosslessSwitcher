@@ -781,47 +781,176 @@ public sealed class SwitchingCoordinatorTests
     public async Task TrackChange_WhenFormatCached_VerifiesCacheAndFiresUpdateEventIfStale()
     {
         var track = CreateTrack();
-        var databasePath = Path.Combine(Path.GetTempPath(), "WindowsLosslessSwitcher.Tests", Guid.NewGuid().ToString("N"), "format-cache.db");
-        var cacheStore = new FormatCacheStore(databasePath, null);
-        
-        var originalFormat = CreateResolvedFormat(CurrentFormat, AudioFormatSource.CatalogManifest, "song-123");
-        cacheStore.Store(track.UniqueKey, originalFormat);
+        var directory = CreateTemporaryDirectoryPath();
 
-        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
-        connection.Open();
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = "UPDATE format_cache SET last_verified_at_utc = @t";
-        cmd.Parameters.AddWithValue("@t", DateTimeOffset.UtcNow.AddDays(-40).ToUniversalTime().ToString("O"));
-        cmd.ExecuteNonQuery();
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var cacheStore = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            var cacheKey = FormatCacheKey.Create("us", track);
+            var originalFormat = CreateResolvedFormat(CurrentFormat, AudioFormatSource.CatalogManifest, "song-123");
+            Assert.True(cacheStore.Store(cacheKey, originalFormat, DateTimeOffset.UtcNow.AddDays(-40)));
+            Assert.True(cacheStore.TryGet(cacheKey, out var originalEntry));
+            Assert.NotNull(originalEntry);
 
-        var trackSource = new TestTrackSource();
-        var mediaTransportController = new TestMediaTransportController();
-        var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat]);
-        var cachedFormat = CreateResolvedFormat(CurrentFormat, AudioFormatSource.CachedCatalog, "song-123");
-        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(cachedFormat));
-        
-        var updatedFormat = CreateResolvedFormat(LosslessFormat, AudioFormatSource.CatalogManifest, "song-123");
-        var updatedResolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(updatedFormat));
-        
-        await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver, formatCacheStore: cacheStore, catalogResolverForCacheVerification: updatedResolver);
-        
-        var updateTask = new TaskCompletionSource<FormatCacheUpdateEventArgs>();
-        coordinator.FormatCacheUpdated += (s, e) => updateTask.TrySetResult(e);
+            var trackSource = new TestTrackSource();
+            var mediaTransportController = new TestMediaTransportController();
+            var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat]);
+            var resolver = new FormatCacheResolver(cacheStore, logger);
+            var updatedFormat = CreateResolvedFormat(LosslessFormat, AudioFormatSource.CatalogManifest, "song-123");
+            var updatedResolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(updatedFormat));
 
-        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: CachedCatalog");
+            await using var coordinator = CreateCoordinator(
+                trackSource,
+                mediaTransportController,
+                audioEndpointController,
+                resolver,
+                formatCacheStore: cacheStore,
+                catalogResolverForCacheVerification: updatedResolver);
+            var updateTask = new TaskCompletionSource<FormatCacheUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            coordinator.FormatCacheUpdated += (_, e) => updateTask.TrySetResult(e);
+            var finalStatusTask = WaitForStatusAsync(
+                coordinator,
+                status => status.ResolverStatusText == "Resolver: CachedCatalog");
 
-        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+            await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+            trackSource.RaiseTrackChanged(track);
+            await finalStatusTask.WaitAsync(DefaultTimeout);
 
-        trackSource.RaiseTrackChanged(track);
-        await finalStatusTask.WaitAsync(DefaultTimeout);
+            var update = await updateTask.Task.WaitAsync(DefaultTimeout);
+            Assert.Equal(CurrentFormat.SampleRateHz, update.PreviousEntry.SampleRateHz);
+            Assert.Equal(LosslessFormat.SampleRateHz, update.UpdatedFormat.SampleRateHz);
+            Assert.Equal(track.Title, update.Track.Title);
+            Assert.True(cacheStore.TryGet(cacheKey, out var updatedEntry));
+            Assert.NotNull(updatedEntry);
+            Assert.Equal(originalEntry.CachedAtUtc, updatedEntry.CachedAtUtc);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
 
-        var update = await updateTask.Task.WaitAsync(DefaultTimeout);
-        Assert.Equal(CurrentFormat.SampleRateHz, update.PreviousEntry.SampleRateHz);
-        Assert.Equal(LosslessFormat.SampleRateHz, update.UpdatedFormat.SampleRateHz);
-        Assert.Equal(track.Title, update.Track.Title);
-        
-        FormatCacheStore.ReleaseConnectionsForTesting();
-        try { Directory.Delete(Path.GetDirectoryName(databasePath)!, true); } catch { }
+    [Fact]
+    public async Task TrackChange_WhenSameStaleCacheKeyReplays_DeduplicatesVerification()
+    {
+        var track = CreateTrack();
+        var directory = CreateTemporaryDirectoryPath();
+
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var cacheStore = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            var cacheKey = FormatCacheKey.Create("us", track);
+            Assert.True(cacheStore.Store(
+                cacheKey,
+                CreateResolvedFormat(CurrentFormat, AudioFormatSource.CatalogManifest, "song-123"),
+                DateTimeOffset.UtcNow.AddDays(-40)));
+
+            var verificationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var verificationResult = new TaskCompletionSource<ResolvedAudioFormat?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var verificationCalls = 0;
+            var verificationResolver = new DelegateResolver(async (_, cancellationToken) =>
+            {
+                Interlocked.Increment(ref verificationCalls);
+                verificationStarted.TrySetResult();
+                return await verificationResult.Task.WaitAsync(cancellationToken);
+            });
+            var trackSource = new TestTrackSource();
+            var mediaTransportController = new TestMediaTransportController();
+            var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat]);
+            var resolver = new FormatCacheResolver(cacheStore, logger);
+
+            await using var coordinator = CreateCoordinator(
+                trackSource,
+                mediaTransportController,
+                audioEndpointController,
+                resolver,
+                formatCacheStore: cacheStore,
+                catalogResolverForCacheVerification: verificationResolver);
+            await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+
+            var firstStatus = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: CachedCatalog");
+            trackSource.RaiseTrackChanged(track);
+            await firstStatus.WaitAsync(DefaultTimeout);
+            await verificationStarted.Task.WaitAsync(DefaultTimeout);
+
+            var secondStatus = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: CachedCatalog");
+            trackSource.RaiseTrackChanged(track);
+            await secondStatus.WaitAsync(DefaultTimeout);
+
+            Assert.Equal(1, Volatile.Read(ref verificationCalls));
+            verificationResult.SetResult(CreateResolvedFormat(CurrentFormat, AudioFormatSource.CatalogManifest, "song-123"));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CancelsAndAwaitsCacheVerification()
+    {
+        var track = CreateTrack();
+        var directory = CreateTemporaryDirectoryPath();
+        SwitchingCoordinator? coordinator = null;
+
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var cacheStore = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            Assert.True(cacheStore.Store(
+                FormatCacheKey.Create("us", track),
+                CreateResolvedFormat(CurrentFormat, AudioFormatSource.CatalogManifest, "song-123"),
+                DateTimeOffset.UtcNow.AddDays(-40)));
+
+            var verificationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var verificationCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var verificationResolver = new DelegateResolver(async (_, cancellationToken) =>
+            {
+                verificationStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return null;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    verificationCanceled.TrySetResult();
+                    throw;
+                }
+            });
+            var trackSource = new TestTrackSource();
+            var mediaTransportController = new TestMediaTransportController();
+            var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat]);
+            coordinator = CreateCoordinator(
+                trackSource,
+                mediaTransportController,
+                audioEndpointController,
+                new FormatCacheResolver(cacheStore, logger),
+                formatCacheStore: cacheStore,
+                catalogResolverForCacheVerification: verificationResolver);
+            await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+
+            var finalStatus = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: CachedCatalog");
+            trackSource.RaiseTrackChanged(track);
+            await finalStatus.WaitAsync(DefaultTimeout);
+            await verificationStarted.Task.WaitAsync(DefaultTimeout);
+
+            await coordinator.DisposeAsync();
+            coordinator = null;
+
+            await verificationCanceled.Task.WaitAsync(DefaultTimeout);
+        }
+        finally
+        {
+            if (coordinator is not null)
+            {
+                await coordinator.DisposeAsync();
+            }
+
+            DeleteDirectory(directory);
+        }
     }
 
     private static SwitchingCoordinator CreateCoordinator(
@@ -884,6 +1013,20 @@ public sealed class SwitchingCoordinatorTests
             "Album",
             "test",
             DateTimeOffset.UtcNow);
+
+    private static string CreateTemporaryDirectoryPath() =>
+        Path.Combine(
+            Path.GetTempPath(),
+            "WindowsLosslessSwitcher.Tests",
+            Guid.NewGuid().ToString("N"));
+
+    private static void DeleteDirectory(string directory)
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 
     private static ResolvedAudioFormat CreateResolvedFormat(
         AudioFormatCandidate format,
