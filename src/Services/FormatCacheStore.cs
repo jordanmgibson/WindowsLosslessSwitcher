@@ -29,6 +29,7 @@ public sealed class FormatCacheStore
     private readonly object _sync = new();
     private Dictionary<string, FormatCacheEntry> _entries = new(StringComparer.Ordinal);
     private bool _initialized;
+    private bool _loadFailureLogged;
     private long _clearGeneration;
 
     public FormatCacheStore()
@@ -53,7 +54,12 @@ public sealed class FormatCacheStore
 
         lock (_sync)
         {
-            EnsureInitialized();
+            if (!EnsureInitialized())
+            {
+                entry = null;
+                return false;
+            }
+
             return _entries.TryGetValue(uniqueKey, out entry);
         }
     }
@@ -72,7 +78,11 @@ public sealed class FormatCacheStore
 
         lock (_sync)
         {
-            EnsureInitialized();
+            if (!EnsureInitialized())
+            {
+                return false;
+            }
+
             var candidate = CopyEntries();
             var cachedAtUtc = candidate.TryGetValue(uniqueKey, out var current)
                 ? current.CachedAtUtc
@@ -123,7 +133,11 @@ public sealed class FormatCacheStore
         var now = DateTimeOffset.UtcNow;
         lock (_sync)
         {
-            EnsureInitialized();
+            if (!EnsureInitialized())
+            {
+                return false;
+            }
+
             if (!_entries.TryGetValue(expectedEntry.UniqueKey, out var current) || current != expectedEntry)
             {
                 return false;
@@ -151,7 +165,8 @@ public sealed class FormatCacheStore
     {
         lock (_sync)
         {
-            EnsureInitialized();
+            // Clearing is valid even when the on-disk cache cannot be read: the point is to
+            // replace whatever is there with an empty cache.
             var candidate = new Dictionary<string, FormatCacheEntry>(StringComparer.Ordinal);
             if (!TryPersist(candidate))
             {
@@ -159,6 +174,7 @@ public sealed class FormatCacheStore
             }
 
             _entries = candidate;
+            _initialized = true;
             _clearGeneration++;
         }
 
@@ -166,17 +182,17 @@ public sealed class FormatCacheStore
         return true;
     }
 
-    private void EnsureInitialized()
+    private bool EnsureInitialized()
     {
         if (_initialized)
         {
-            return;
+            return true;
         }
 
-        _initialized = true;
         if (!File.Exists(_cachePath))
         {
-            return;
+            _initialized = true;
+            return true;
         }
 
         try
@@ -188,21 +204,37 @@ public sealed class FormatCacheStore
                 document.CatalogResolverVersion != CatalogResolverVersion)
             {
                 TryLogWarning("Catalog format cache has an unsupported version and will be rebuilt.");
-                return;
             }
-
-            if (!TryValidateEntries(document.Entries, out var entries))
+            else if (!TryValidateEntries(document.Entries, out var entries))
             {
                 TryLogWarning("Catalog format cache contains invalid entries and will be rebuilt.");
-                return;
             }
-
-            _entries = entries;
+            else
+            {
+                _entries = entries;
+            }
+        }
+        catch (JsonException ex)
+        {
+            TryLogWarning($"Catalog format cache is corrupt and will be rebuilt: {ex.Message}");
         }
         catch (Exception ex)
         {
-            TryLogWarning($"Catalog format cache could not be loaded and will be rebuilt: {ex.Message}");
+            // Likely transient (e.g. the file is held by a sync or backup tool). Serve misses and
+            // retry on the next call instead of marking the store initialized, so a later Store
+            // cannot persist an empty dictionary over entries that are still intact on disk.
+            if (!_loadFailureLogged)
+            {
+                _loadFailureLogged = true;
+                TryLogWarning($"Catalog format cache could not be read; caching is paused until it can be: {ex.Message}");
+            }
+
+            return false;
         }
+
+        _initialized = true;
+        _loadFailureLogged = false;
+        return true;
     }
 
     private bool TryPersist(Dictionary<string, FormatCacheEntry> entries)

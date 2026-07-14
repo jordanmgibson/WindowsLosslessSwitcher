@@ -162,6 +162,43 @@ public sealed class FormatCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public void Store_WhenCacheFileTemporarilyUnreadable_DoesNotWipeExistingEntries()
+    {
+        Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
+
+        var reloaded = new FormatCacheStore(_cachePath, null);
+        using (new FileStream(_cachePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.False(reloaded.TryGet("cache-key", out _));
+            Assert.False(reloaded.Store("other-key", CreateCatalogFormat(48000, 24, "song-456")));
+        }
+
+        Assert.True(reloaded.TryGet("cache-key", out var preserved));
+        Assert.NotNull(preserved);
+        Assert.Equal(96000, preserved.SampleRateHz);
+        Assert.True(reloaded.Store("other-key", CreateCatalogFormat(48000, 24, "song-456")));
+        Assert.True(reloaded.TryGet("other-key", out _));
+    }
+
+    [Fact]
+    public void Clear_WhenCacheFileUnreadable_StillReplacesItWithEmptyCache()
+    {
+        Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
+
+        var reloaded = new FormatCacheStore(_cachePath, null);
+        using (new FileStream(_cachePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.False(reloaded.TryGet("cache-key", out _));
+        }
+
+        // Clear succeeds without ever having loaded the file and leaves an empty cache behind.
+        Assert.True(reloaded.Clear());
+        Assert.False(reloaded.TryGet("cache-key", out _));
+        var fresh = new FormatCacheStore(_cachePath, null);
+        Assert.False(fresh.TryGet("cache-key", out _));
+    }
+
+    [Fact]
     public void Store_WhenDestinationCannotBeReplaced_FailsOpen()
     {
         var blockedPath = Path.Combine(_directory, "blocked");
