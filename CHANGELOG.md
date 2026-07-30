@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probes) are now actually gated by `enableVerboseDiagnostics`; the setting
   previously had no effect.
 
+### Fixed
+
+- Update dialogs now show the full version including the prerelease suffix
+  (previously "Version 1.0.0 is available" when offering 1.0.0-beta.N).
+
 ## [1.0.0-beta.1] - 2026-06-11
 
 ### Changed
