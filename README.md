@@ -148,6 +148,7 @@ Combinations reported to work by users. Regardless, you use the app at your own 
 | Windows version | Apple Music version | Audio device |
 | --------------- | ------------------- | ------------ |
 | Windows 11 25H2 | 1.1540.23042.0 | Geshelli J3 w/ Amanero USB Module |
+| Windows 11 25H2 | 1.1540.23042.0 | Chord Hugo 2 |
 
 If it works with your setup, add a row to this table by opening a pull request!
 
