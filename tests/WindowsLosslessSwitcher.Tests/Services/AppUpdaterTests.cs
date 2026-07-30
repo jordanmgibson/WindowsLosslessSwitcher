@@ -18,6 +18,21 @@ public sealed class AppUpdaterTests
     }
 
     [Fact]
+    public void DisplayVersion_KeepsPrereleaseSuffixWhenSourceProvidedOne()
+    {
+        // System.Version drops "-beta.N"; the update dialog must not ("Version 1.0.0 is
+        // available" while installing 1.0.0-beta.6 reads as a different release entirely).
+        var update = new InstalledUpdateInfo(new Version(1, 0, 0), null, new object(), "1.0.0-beta.6");
+        Assert.Equal("1.0.0-beta.6", update.DisplayVersion);
+
+        var bare = new InstalledUpdateInfo(new Version(1, 0, 0), null, new object());
+        Assert.Equal("1.0.0", bare.DisplayVersion);
+
+        var prepared = new PreparedUpdateInfo(new Version(1, 0, 0), new object(), "1.0.0-beta.6");
+        Assert.Equal("1.0.0-beta.6", prepared.DisplayVersion);
+    }
+
+    [Fact]
     public void SelectPortableAsset_ReturnsMatchingChannelizedPortablePackage()
     {
         var expected = new GitHubReleaseAssetInfo(

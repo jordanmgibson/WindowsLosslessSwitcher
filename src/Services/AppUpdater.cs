@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -83,7 +83,7 @@ public sealed class AppUpdater : IAppUpdater
             Publish(
                 new UpdateStatusSnapshot(
                     _currentVersion,
-                    $"Version {pendingRestart.Version} is ready to apply.",
+                    $"Version {pendingRestart.DisplayVersion} is ready to apply.",
                     UpdateActionKind.RestartToApply,
                     "Restart to apply",
                     true,
@@ -91,7 +91,7 @@ public sealed class AppUpdater : IAppUpdater
                     true,
                     false,
                     _installedUpdateManager.IsPortable,
-                    pendingRestart.Version.ToString()));
+                    pendingRestart.DisplayVersion));
             return Task.CompletedTask;
         }
 
@@ -259,7 +259,7 @@ public sealed class AppUpdater : IAppUpdater
                     return;
                 }
 
-                _logger.Info($"Applying prepared update {pendingRestart.Version} and restarting.");
+                _logger.Info($"Applying prepared update {pendingRestart.DisplayVersion} and restarting.");
                 _installedUpdateManager.ApplyUpdatesAndRestart(pendingRestart, ["--minimized"]);
                 return;
 
@@ -324,7 +324,7 @@ public sealed class AppUpdater : IAppUpdater
         Publish(
             new UpdateStatusSnapshot(
                 _currentVersion,
-                $"Version {update.TargetVersion} is available for download.",
+                $"Version {update.DisplayVersion} is available for download.",
                 UpdateActionKind.DownloadAndPrepare,
                 "Download update",
                 true,
@@ -332,7 +332,7 @@ public sealed class AppUpdater : IAppUpdater
                 true,
                 false,
                 false,
-                update.TargetVersion.ToString()));
+                update.DisplayVersion));
     }
 
     private async Task CheckPortableUpdatesAsync(CancellationToken cancellationToken)
@@ -414,7 +414,7 @@ public sealed class AppUpdater : IAppUpdater
         Publish(
             CurrentStatus with
             {
-                StatusText = $"Downloading update {update.TargetVersion}...",
+                StatusText = $"Downloading update {update.DisplayVersion}...",
                 IsBusy = true,
                 CanCheckForUpdates = false,
                 CanRunPrimaryAction = false,
@@ -430,7 +430,7 @@ public sealed class AppUpdater : IAppUpdater
                     Publish(
                         CurrentStatus with
                         {
-                            StatusText = $"Downloading update {update.TargetVersion}... {progress}%",
+                            StatusText = $"Downloading update {update.DisplayVersion}... {progress}%",
                             ProgressPercent = progress,
                         });
                 },
@@ -439,7 +439,7 @@ public sealed class AppUpdater : IAppUpdater
             Publish(
                 new UpdateStatusSnapshot(
                     _currentVersion,
-                    $"Version {prepared.Version} has been downloaded and is ready to apply.",
+                    $"Version {prepared.DisplayVersion} has been downloaded and is ready to apply.",
                     UpdateActionKind.RestartToApply,
                     "Restart to apply",
                     true,
@@ -447,7 +447,7 @@ public sealed class AppUpdater : IAppUpdater
                     true,
                     false,
                     false,
-                    prepared.Version.ToString()));
+                    prepared.DisplayVersion));
         }
         catch (OperationCanceledException)
         {
@@ -621,7 +621,10 @@ internal sealed class VelopackInstalledUpdateManager : IInstalledUpdateManager
 
     public PreparedUpdateInfo? PendingRestart =>
         _manager?.UpdatePendingRestart is { } asset
-            ? new PreparedUpdateInfo(AppUpdater.ParseVersion(asset.Version.ToString()) ?? new Version(0, 0), asset)
+            ? new PreparedUpdateInfo(
+                AppUpdater.ParseVersion(asset.Version.ToString()) ?? new Version(0, 0),
+                asset,
+                asset.Version.ToString())
             : null;
 
     public async Task<InstalledUpdateInfo?> CheckForUpdatesAsync(CancellationToken cancellationToken)
@@ -637,7 +640,8 @@ internal sealed class VelopackInstalledUpdateManager : IInstalledUpdateManager
             : new InstalledUpdateInfo(
                 AppUpdater.ParseVersion(update.TargetFullRelease.Version.ToString()) ?? new Version(0, 0),
                 update.TargetFullRelease.NotesMarkdown,
-                update);
+                update,
+                update.TargetFullRelease.Version.ToString());
     }
 
     public async Task<PreparedUpdateInfo> DownloadUpdatesAsync(
@@ -657,7 +661,10 @@ internal sealed class VelopackInstalledUpdateManager : IInstalledUpdateManager
             throw new InvalidOperationException("Velopack did not report a prepared update after download.");
         }
 
-        return new PreparedUpdateInfo(AppUpdater.ParseVersion(pending.Version.ToString()) ?? new Version(0, 0), pending);
+        return new PreparedUpdateInfo(
+            AppUpdater.ParseVersion(pending.Version.ToString()) ?? new Version(0, 0),
+            pending,
+            pending.Version.ToString());
     }
 
     public void ApplyUpdatesAndRestart(PreparedUpdateInfo update, string[] restartArgs)
@@ -764,9 +771,26 @@ internal sealed class LinkLauncher : ILinkLauncher
     }
 }
 
-internal sealed record InstalledUpdateInfo(Version TargetVersion, string? NotesMarkdown, object NativeHandle);
+internal sealed record InstalledUpdateInfo(
+    Version TargetVersion,
+    string? NotesMarkdown,
+    object NativeHandle,
+    string? TargetVersionText = null)
+{
+    /// <summary>
+    /// User-facing version string. System.Version cannot carry a semver prerelease suffix, so
+    /// prefer the raw release text ("1.0.0-beta.6") when the source supplied one.
+    /// </summary>
+    public string DisplayVersion =>
+        string.IsNullOrWhiteSpace(TargetVersionText) ? TargetVersion.ToString() : TargetVersionText;
+}
 
-internal sealed record PreparedUpdateInfo(Version Version, object NativeHandle);
+internal sealed record PreparedUpdateInfo(Version Version, object NativeHandle, string? VersionText = null)
+{
+    /// <summary>User-facing version string; see <see cref="InstalledUpdateInfo.DisplayVersion"/>.</summary>
+    public string DisplayVersion =>
+        string.IsNullOrWhiteSpace(VersionText) ? Version.ToString() : VersionText;
+}
 
 internal sealed record GitHubReleaseInfo(
     Version Version,
