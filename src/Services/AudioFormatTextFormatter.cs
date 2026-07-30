@@ -1,4 +1,4 @@
-using WindowsLosslessSwitcher.Models;
+﻿using WindowsLosslessSwitcher.Models;
 
 namespace WindowsLosslessSwitcher.Services;
 
@@ -48,5 +48,5 @@ public static class AudioFormatTextFormatter
                 .ThenBy(format => format.BitDepth)
                 .Select(Format));
 
-    private static string FormatSampleRate(int sampleRateHz) => $"{sampleRateHz / 1000.0:0.###} kHz";
+    public static string FormatSampleRate(int sampleRateHz) => $"{sampleRateHz / 1000.0:0.###} kHz";
 }

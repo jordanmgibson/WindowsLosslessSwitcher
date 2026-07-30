@@ -170,6 +170,17 @@
                          Visibility="{Binding IsSwitchToastMetadataOptionVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
                          IsChecked="{Binding IncludeTrackMetadataInSwitchToasts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                          Content="Include song, artist, and album in popup" />
+              <CheckBox Margin="0,8,0,0"
+                        IsChecked="{Binding EnableVerboseDiagnostics, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        Content="Write verbose diagnostics to the log file" />
+              <CheckBox Margin="0,8,0,0"
+                        IsChecked="{Binding RestartAppleMusicOnPlaybackFailure, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        Content="Restart Apple Music automatically if playback recovery fails" />
+              <TextBlock Margin="24,2,0,0"
+                         FontSize="11"
+                         Opacity="0.7"
+                         Text="Last-resort recovery only; the Apple Music play queue may reset."
+                         TextWrapping="Wrap" />
             </StackPanel>
 
             <Border Margin="0,16,0,0"
@@ -203,6 +214,28 @@
                              Text="days" />
                   </StackPanel>
                 </Grid>
+                <Grid Margin="0,10,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0"
+                             VerticalAlignment="Center"
+                             Text="Apple Music storefront"
+                             TextWrapping="Wrap" />
+                  <TextBox Grid.Column="1"
+                           Width="72"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"
+                           MaxLength="2"
+                           CharacterCasing="Lower"
+                           Text="{Binding AppleMusicStorefront, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                </Grid>
+                <TextBlock Margin="0,4,0,0"
+                           FontSize="11"
+                           Opacity="0.7"
+                           Text="Two-letter country code (e.g. gb, jp). Leave blank to detect from the Windows region. Applies after the app restarts."
+                           TextWrapping="Wrap" />
                 <Button Margin="0,10,0,0"
                         HorizontalAlignment="Left"
                         Padding="10,4"
@@ -213,6 +246,58 @@
                            Opacity="0.7"
                            Text="{Binding FormatCacheStatusText}"
                            TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+
+            <Border Margin="0,16,0,0"
+                    Padding="12"
+                    BorderBrush="{StaticResource PanelBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+              <StackPanel>
+                <TextBlock FontWeight="SemiBold" Text="Allowed hardware formats" />
+                <TextBlock Margin="0,6,0,0"
+                           FontSize="11"
+                           Opacity="0.7"
+                           Text="Uncheck rates or depths your hardware can't lock to — useful when a virtual cable or ASIO bridge sits between this device and the real DAC and reports formats it doesn't support. At least one of each stays enabled; checking everything applies no restriction."
+                           TextWrapping="Wrap" />
+                <TextBlock Margin="0,8,0,0"
+                           Visibility="{Binding HasNoFormatOptions, Converter={StaticResource BooleanToVisibilityConverter}}"
+                           FontSize="11"
+                           Opacity="0.7"
+                           Text="No target device detected." />
+                <StackPanel Visibility="{Binding HasFormatOptions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                  <TextBlock Margin="0,8,0,0" Text="Sample rates" />
+                  <ItemsControl Margin="0,2,0,0" ItemsSource="{Binding SampleRateOptions}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <CheckBox Margin="0,4,16,0"
+                                  IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  Content="{Binding Label}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <TextBlock Margin="0,10,0,0" Text="Bit depths" />
+                  <ItemsControl Margin="0,2,0,0" ItemsSource="{Binding BitDepthOptions}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <CheckBox Margin="0,4,16,0"
+                                  IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  Content="{Binding Label}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
               </StackPanel>
             </Border>
 

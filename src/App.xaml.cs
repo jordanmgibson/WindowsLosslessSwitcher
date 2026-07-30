@@ -68,6 +68,10 @@ public partial class App : Application
         _viewModel.EnableSwitchToasts = _settings.EnableSwitchToasts;
         _viewModel.IncludeTrackMetadataInSwitchToasts = _settings.IncludeTrackMetadataInSwitchToasts;
         _viewModel.FormatCacheRefreshDays = _settings.FormatCacheRefreshDays;
+        _viewModel.AppleMusicStorefront = _settings.AppleMusicStorefront;
+        _viewModel.EnableVerboseDiagnostics = _settings.EnableVerboseDiagnostics;
+        _viewModel.RestartAppleMusicOnPlaybackFailure = _settings.RestartAppleMusicOnPlaybackFailure;
+        _viewModel.SeedAllowedFormats(_settings.AllowedSampleRates, _settings.AllowedBitDepths);
         UpdateOriginalFormatRestoreState();
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         _viewModel.RefreshRequested += RefreshDevices;
@@ -282,7 +286,12 @@ public partial class App : Application
             e.PropertyName is not nameof(MainWindowViewModel.DefaultBitDepth) &&
             e.PropertyName is not nameof(MainWindowViewModel.EnableSwitchToasts) &&
             e.PropertyName is not nameof(MainWindowViewModel.IncludeTrackMetadataInSwitchToasts) &&
-            e.PropertyName is not nameof(MainWindowViewModel.FormatCacheRefreshDays))
+            e.PropertyName is not nameof(MainWindowViewModel.FormatCacheRefreshDays) &&
+            e.PropertyName is not nameof(MainWindowViewModel.AppleMusicStorefront) &&
+            e.PropertyName is not nameof(MainWindowViewModel.EnableVerboseDiagnostics) &&
+            e.PropertyName is not nameof(MainWindowViewModel.RestartAppleMusicOnPlaybackFailure) &&
+            e.PropertyName is not nameof(MainWindowViewModel.AllowedSampleRates) &&
+            e.PropertyName is not nameof(MainWindowViewModel.AllowedBitDepths))
         {
             return;
         }
@@ -296,6 +305,11 @@ public partial class App : Application
         _settings.EnableSwitchToasts = _viewModel.EnableSwitchToasts;
         _settings.IncludeTrackMetadataInSwitchToasts = _viewModel.IncludeTrackMetadataInSwitchToasts;
         _settings.FormatCacheRefreshDays = _viewModel.FormatCacheRefreshDays;
+        _settings.AppleMusicStorefront = _viewModel.AppleMusicStorefront;
+        _settings.EnableVerboseDiagnostics = _viewModel.EnableVerboseDiagnostics;
+        _settings.RestartAppleMusicOnPlaybackFailure = _viewModel.RestartAppleMusicOnPlaybackFailure;
+        _settings.AllowedSampleRates = _viewModel.AllowedSampleRates.ToList();
+        _settings.AllowedBitDepths = _viewModel.AllowedBitDepths.ToList();
         _settingsService.Save(_settings);
         _logger.VerboseEnabled = _settings.EnableVerboseDiagnostics;
         _coordinator?.UpdateSettings(_settings);

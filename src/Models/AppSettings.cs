@@ -19,6 +19,7 @@ public sealed class AppSettings
     private int _defaultBitDepth = 24;
     private int _formatCacheRefreshDays = 30;
     private List<int> _allowedSampleRates = [];
+    private List<int> _allowedBitDepths = [];
 
     public DeviceSelectionMode DeviceSelectionMode { get; set; } = DeviceSelectionMode.FollowDefault;
 
@@ -42,6 +43,19 @@ public sealed class AppSettings
         set => _allowedSampleRates = value is null
             ? []
             : value.Where(rate => rate > 0).Distinct().OrderBy(rate => rate).ToList();
+    }
+
+    /// <summary>
+    /// Optional allow-list of bit depths the physical hardware accepts; companion to
+    /// <see cref="AllowedSampleRates"/>. Not clamped to 16/24 like <see cref="DefaultBitDepth"/> —
+    /// devices legitimately report 32-bit. Empty (the default) leaves depth selection unrestricted.
+    /// </summary>
+    public List<int> AllowedBitDepths
+    {
+        get => _allowedBitDepths;
+        set => _allowedBitDepths = value is null
+            ? []
+            : value.Where(depth => depth > 0).Distinct().OrderBy(depth => depth).ToList();
     }
 
     public int DefaultBitDepth

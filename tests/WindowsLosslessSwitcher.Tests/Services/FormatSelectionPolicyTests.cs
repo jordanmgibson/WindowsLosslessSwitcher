@@ -145,6 +145,88 @@ public sealed class FormatSelectionPolicyTests
         Assert.Equal(new AudioFormatCandidate(96000, 24, 2), selected);
     }
 
+    // ── allowedBitDepths ──────────────────────────────────────────────────────
+
+    [Fact]
+    public void SelectBest_AllowedBitDepths_ClampsToAllowedDepth()
+    {
+        // 24-bit requested, only 16 allowed on a 16/24/32 device: apply 16.
+        var selected = FormatSelectionPolicy.SelectBest(
+            CreateRequested(48000, 24),
+            currentFormat: null,
+            supportedFormats:
+            [
+                new(48000, 16, 2),
+                new(48000, 24, 2),
+                new(48000, 32, 2),
+            ],
+            switchBitDepth: true,
+            defaultBitDepth: 24,
+            preferClosestSampleRateMultiple: false,
+            allowedSampleRates: null,
+            allowedBitDepths: [16]);
+
+        Assert.Equal(new AudioFormatCandidate(48000, 16, 2), selected);
+    }
+
+    [Fact]
+    public void SelectBest_AllowedBitDepthsMatchingNothing_FallsBackToUnrestrictedDepths()
+    {
+        var selected = FormatSelectionPolicy.SelectBest(
+            CreateRequested(48000, 24),
+            currentFormat: null,
+            supportedFormats:
+            [
+                new(48000, 16, 2),
+                new(48000, 24, 2),
+            ],
+            switchBitDepth: true,
+            defaultBitDepth: 24,
+            preferClosestSampleRateMultiple: false,
+            allowedSampleRates: null,
+            allowedBitDepths: [32]);
+
+        Assert.Equal(new AudioFormatCandidate(48000, 24, 2), selected);
+    }
+
+    [Fact]
+    public void SelectBest_DepthRestrictionExcludesRatesWithOnlyDisallowedDepths()
+    {
+        // 96 kHz exists only at 32-bit; with 32 disallowed the rate itself must not be selected,
+        // even though it is the requested rate.
+        var selected = FormatSelectionPolicy.SelectBest(
+            CreateRequested(96000, 24),
+            currentFormat: null,
+            supportedFormats:
+            [
+                new(48000, 24, 2),
+                new(96000, 32, 2),
+            ],
+            switchBitDepth: true,
+            defaultBitDepth: 24,
+            preferClosestSampleRateMultiple: false,
+            allowedSampleRates: null,
+            allowedBitDepths: [16, 24]);
+
+        Assert.Equal(new AudioFormatCandidate(48000, 24, 2), selected);
+    }
+
+    [Fact]
+    public void SelectBest_RateAndDepthRestrictionsCompose()
+    {
+        var selected = FormatSelectionPolicy.SelectBest(
+            CreateRequested(192000, 24),
+            currentFormat: null,
+            supportedFormats: CreateWideOpenFormats(),
+            switchBitDepth: true,
+            defaultBitDepth: 24,
+            preferClosestSampleRateMultiple: false,
+            allowedSampleRates: [44100, 48000, 96000],
+            allowedBitDepths: [24]);
+
+        Assert.Equal(new AudioFormatCandidate(96000, 24, 2), selected);
+    }
+
     private static List<AudioFormatCandidate> CreateWideOpenFormats() =>
         // Mimics a virtual cable claiming everything from 44.1 to 384.
         [

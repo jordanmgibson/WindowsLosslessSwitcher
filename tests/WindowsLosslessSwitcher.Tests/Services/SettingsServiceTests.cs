@@ -28,6 +28,10 @@ public sealed class SettingsServiceTests
                 IncludeTrackMetadataInSwitchToasts = true,
                 FormatCacheRefreshDays = 60,
                 AllowedSampleRates = [44100, 48000, 96000],
+                AllowedBitDepths = [16, 24],
+                AppleMusicStorefront = "gb",
+                EnableVerboseDiagnostics = false,
+                RestartAppleMusicOnPlaybackFailure = false,
                 OriginalTarget = new OriginalTargetSnapshot(
                     "device-1",
                     "USB DAC",
@@ -47,6 +51,10 @@ public sealed class SettingsServiceTests
             Assert.Equal(settings.OriginalTarget, loaded.OriginalTarget);
             Assert.Equal(60, loaded.FormatCacheRefreshDays);
             Assert.Equal([44100, 48000, 96000], loaded.AllowedSampleRates);
+            Assert.Equal([16, 24], loaded.AllowedBitDepths);
+            Assert.Equal("gb", loaded.AppleMusicStorefront);
+            Assert.False(loaded.EnableVerboseDiagnostics);
+            Assert.False(loaded.RestartAppleMusicOnPlaybackFailure);
         }
         finally
         {
@@ -67,6 +75,9 @@ public sealed class SettingsServiceTests
 
         settings.AllowedSampleRates = null!;
         Assert.Empty(settings.AllowedSampleRates);
+
+        var depths = new AppSettings { AllowedBitDepths = [32, 0, -1, 16, 32] };
+        Assert.Equal([16, 32], depths.AllowedBitDepths);
     }
 
     [Theory]

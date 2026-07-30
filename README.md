@@ -108,8 +108,13 @@ Settings are stored at `%APPDATA%\WindowsLosslessSwitcher\settings.json`. The ca
   // rates are clamped to this list before being applied (preferring the same 44.1/48 family, so
   // 88.2 clamps to 44.1 rather than 96). Use this when a virtual cable or ASIO bridge sits
   // between the switched endpoint and the real DAC and reports rates the hardware can't lock to.
-  // Leave empty for unrestricted selection.
+  // Leave empty for unrestricted selection. Also editable from the app window ("Allowed
+  // hardware formats" checkboxes).
   "allowedSampleRates": [],
+
+  // Companion allow-list of bit depths (e.g. [16, 24]); same semantics and UI as
+  // allowedSampleRates. Leave empty for unrestricted selection.
+  "allowedBitDepths": [],
 
   // Show a brief popup toast in the corner of the screen when a new format is applied.
   "enableSwitchToasts": false,
@@ -122,17 +127,19 @@ Settings are stored at `%APPDATA%\WindowsLosslessSwitcher\settings.json`. The ca
   "formatCacheRefreshDays": 30,
 
   // Write verbose per-operation diagnostic entries to the log file.
-  // Disable if the log grows too quickly during normal use.
+  // Disable if the log grows too quickly during normal use. Also editable from the app window.
   "enableVerboseDiagnostics": true,
 
   // Apple Music storefront for catalog lookups, as a two-letter country code (e.g. "gb", "jp").
   // Leave null to detect it from the Windows region, falling back to "us". Set this if your
-  // Apple Music account's country differs from your Windows region.
+  // Apple Music account's country differs from your Windows region. Also editable from the app
+  // window; applies after the app restarts.
   "appleMusicStorefront": null,
 
   // Last-resort recovery: when playback wedges repeatedly and every lighter recovery fails,
   // restart Apple Music automatically (its play queue may reset — Apple Music cannot restore
   // it across restarts). Disable to keep recovery limited to nudges and track skips.
+  // Also editable from the app window.
   "restartAppleMusicOnPlaybackFailure": true,
 
   // Set by the app when it captures a pre-switch device format for later restoration.

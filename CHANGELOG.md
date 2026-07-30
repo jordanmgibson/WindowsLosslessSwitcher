@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- "Allowed hardware formats" section in the app window: check exactly the
+  sample rates and bit depths your physical hardware accepts (listed from the
+  active target device), backed by `allowedSampleRates` and the new
+  `allowedBitDepths` setting. At least one of each stays enabled; checking
+  everything applies no restriction.
+- The remaining settings that previously existed only in settings.json are
+  now editable from the app window: the Apple Music storefront override
+  (applies after restart), verbose diagnostics, and the automatic Apple
+  Music restart on playback-recovery failure.
+
 ## [1.0.0-beta.6] - 2026-07-30
 
 ### Added

@@ -42,6 +42,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool _canOpenReleasesPage;
     private string _originalFormatText = "Original format not captured yet.";
     private bool _canRestoreOriginalFormat;
+    private string? _appleMusicStorefront;
+    private bool _enableVerboseDiagnostics = true;
+    private bool _restartAppleMusicOnPlaybackFailure = true;
+    private List<int> _allowedSampleRates = [];
+    private List<int> _allowedBitDepths = [];
+    private bool _syncingFormatOptions;
 
     public MainWindowViewModel()
     {
@@ -79,6 +85,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public event Action? ClearFormatCacheRequested;
 
     public ObservableCollection<AudioDeviceInfo> Devices { get; } = [];
+
+    public ObservableCollection<FormatOptionItem> SampleRateOptions { get; } = [];
+
+    public ObservableCollection<FormatOptionItem> BitDepthOptions { get; } = [];
 
     public IReadOnlyList<DeviceSelectionModeOption> DeviceModes { get; } =
     [
@@ -309,6 +319,44 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Two-letter Apple Music storefront override, or null for OS-region auto-detection.
+    /// Normalized on the way in; the resolver validates and falls back at startup, so transient
+    /// invalid text is harmless to hold. Applies after an app restart.
+    /// </summary>
+    public string? AppleMusicStorefront
+    {
+        get => _appleMusicStorefront;
+        set => SetField(
+            ref _appleMusicStorefront,
+            string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant());
+    }
+
+    public bool EnableVerboseDiagnostics
+    {
+        get => _enableVerboseDiagnostics;
+        set => SetField(ref _enableVerboseDiagnostics, value);
+    }
+
+    public bool RestartAppleMusicOnPlaybackFailure
+    {
+        get => _restartAppleMusicOnPlaybackFailure;
+        set => SetField(ref _restartAppleMusicOnPlaybackFailure, value);
+    }
+
+    /// <summary>
+    /// Persisted rate allow-list. Empty means unrestricted (all boxes checked). Updated only by
+    /// user toggles — device roster churn never rewrites it.
+    /// </summary>
+    public IReadOnlyList<int> AllowedSampleRates => _allowedSampleRates;
+
+    /// <summary>Persisted depth allow-list; same semantics as <see cref="AllowedSampleRates"/>.</summary>
+    public IReadOnlyList<int> AllowedBitDepths => _allowedBitDepths;
+
+    public bool HasFormatOptions => SampleRateOptions.Count > 0 || BitDepthOptions.Count > 0;
+
+    public bool HasNoFormatOptions => !HasFormatOptions;
+
     public string OriginalFormatText
     {
         get => _originalFormatText;
@@ -372,6 +420,123 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         SupportedBitDepthsText = AudioFormatTextFormatter.BuildSupportedBitDepthsText(snapshot.SupportedFormats);
         SupportedFormatsText = AudioFormatTextFormatter.BuildSupportedFormatsText(snapshot.SupportedFormats);
         SupportedFormatsDiagnosticsText = string.IsNullOrWhiteSpace(snapshot.ProbeDiagnostics) ? "-" : snapshot.ProbeDiagnostics;
+        SyncFormatOptions(
+            SampleRateOptions,
+            snapshot.SupportedFormats.Select(format => format.SampleRateHz),
+            _allowedSampleRates,
+            AudioFormatTextFormatter.FormatSampleRate,
+            OnSampleRateOptionChanged);
+        SyncFormatOptions(
+            BitDepthOptions,
+            snapshot.SupportedFormats.Select(format => format.BitDepth),
+            _allowedBitDepths,
+            depth => $"{depth}-bit",
+            OnBitDepthOptionChanged);
+        OnPropertyChanged(nameof(HasFormatOptions));
+        OnPropertyChanged(nameof(HasNoFormatOptions));
+    }
+
+    /// <summary>
+    /// Seeds the persisted allow-lists from settings at startup, before any capability snapshot
+    /// arrives, so the first checkbox roster reflects the stored configuration.
+    /// </summary>
+    public void SeedAllowedFormats(IReadOnlyList<int> allowedSampleRates, IReadOnlyList<int> allowedBitDepths)
+    {
+        _allowedSampleRates = allowedSampleRates.ToList();
+        _allowedBitDepths = allowedBitDepths.ToList();
+    }
+
+    // Diff-based: this runs on every coordinator status change, so existing item instances (and
+    // their checked state) must survive; only genuinely added/removed roster values change the
+    // collection. Runs under the sync guard so programmatic IsChecked writes never persist.
+    private void SyncFormatOptions(
+        ObservableCollection<FormatOptionItem> options,
+        IEnumerable<int> rosterValues,
+        IReadOnlyCollection<int> configured,
+        Func<int, string> formatLabel,
+        PropertyChangedEventHandler onItemChanged)
+    {
+        _syncingFormatOptions = true;
+        try
+        {
+            var desired = rosterValues.Where(value => value > 0).Distinct().OrderBy(value => value).ToList();
+            for (var i = options.Count - 1; i >= 0; i--)
+            {
+                if (!desired.Contains(options[i].Value))
+                {
+                    options[i].PropertyChanged -= onItemChanged;
+                    options.RemoveAt(i);
+                }
+            }
+
+            for (var i = 0; i < desired.Count; i++)
+            {
+                if (i < options.Count && options[i].Value == desired[i])
+                {
+                    continue;
+                }
+
+                var isChecked = configured.Count == 0 || configured.Contains(desired[i]);
+                var item = new FormatOptionItem(desired[i], formatLabel(desired[i]), isChecked);
+                item.PropertyChanged += onItemChanged;
+                options.Insert(i, item);
+            }
+
+            // A configuration written for different hardware can leave every shown box unchecked;
+            // the policy treats that as unrestricted, so the display does too.
+            if (options.Count > 0 && options.All(option => !option.IsChecked))
+            {
+                foreach (var option in options)
+                {
+                    option.IsChecked = true;
+                }
+            }
+        }
+        finally
+        {
+            _syncingFormatOptions = false;
+        }
+    }
+
+    private void OnSampleRateOptionChanged(object? sender, PropertyChangedEventArgs e) =>
+        HandleFormatOptionToggle(SampleRateOptions, sender as FormatOptionItem, ref _allowedSampleRates, nameof(AllowedSampleRates));
+
+    private void OnBitDepthOptionChanged(object? sender, PropertyChangedEventArgs e) =>
+        HandleFormatOptionToggle(BitDepthOptions, sender as FormatOptionItem, ref _allowedBitDepths, nameof(AllowedBitDepths));
+
+    private void HandleFormatOptionToggle(
+        ObservableCollection<FormatOptionItem> options,
+        FormatOptionItem? item,
+        ref List<int> configured,
+        string persistencePropertyName)
+    {
+        if (_syncingFormatOptions || item is null)
+        {
+            return;
+        }
+
+        // At least one box stays checked: silently revert the uncheck that would empty the group.
+        if (!item.IsChecked && options.All(option => !option.IsChecked))
+        {
+            _syncingFormatOptions = true;
+            try
+            {
+                item.IsChecked = true;
+            }
+            finally
+            {
+                _syncingFormatOptions = false;
+            }
+
+            return;
+        }
+
+        // All boxes checked persists as empty = unrestricted, which stays correct if the device
+        // later reports formats that are not on screen today.
+        configured = options.All(option => option.IsChecked)
+            ? []
+            : options.Where(option => option.IsChecked).Select(option => option.Value).ToList();
+        OnPropertyChanged(persistencePropertyName);
     }
 
     public void UpdateAppVersion(UpdateStatusSnapshot snapshot)
@@ -404,3 +569,39 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 }
 
 public sealed record DeviceSelectionModeOption(DeviceSelectionMode Mode, string DisplayName);
+
+/// <summary>
+/// One checkable sample-rate or bit-depth entry in the allowed-formats section.
+/// </summary>
+public sealed class FormatOptionItem : INotifyPropertyChanged
+{
+    private bool _isChecked;
+
+    internal FormatOptionItem(int value, string label, bool isChecked)
+    {
+        Value = value;
+        Label = label;
+        _isChecked = isChecked;
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    public int Value { get; }
+
+    public string Label { get; }
+
+    public bool IsChecked
+    {
+        get => _isChecked;
+        set
+        {
+            if (_isChecked == value)
+            {
+                return;
+            }
+
+            _isChecked = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsChecked)));
+        }
+    }
+}

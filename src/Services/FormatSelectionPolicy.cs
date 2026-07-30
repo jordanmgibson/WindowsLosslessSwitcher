@@ -11,18 +11,21 @@ public static class FormatSelectionPolicy
         bool switchBitDepth,
         int defaultBitDepth,
         bool preferClosestSampleRateMultiple,
-        IReadOnlyCollection<int>? allowedSampleRates = null)
+        IReadOnlyCollection<int>? allowedSampleRates = null,
+        IReadOnlyCollection<int>? allowedBitDepths = null)
     {
         if (supportedFormats.Count == 0)
         {
             return null;
         }
 
-        // User-declared hardware allow-list (issue #7): a virtual cable or bridge between the
+        // User-declared hardware allow-lists (issue #7): a virtual cable or bridge between the
         // switched endpoint and the physical DAC reports its own inflated capabilities, so a rate
-        // the real hardware never locks to would otherwise be applied. Restrict the candidate pool
-        // before rate selection; fall back to the unrestricted pool when nothing matches, so a
-        // misconfigured list degrades to today's behavior instead of dead-ending the switch.
+        // or depth the real hardware never locks to would otherwise be applied. Restrict the
+        // candidate pool before rate selection; each list independently falls back to the
+        // unrestricted pool when nothing matches, so a misconfigured list degrades to today's
+        // behavior instead of dead-ending the switch. Depths are restricted before the rate is
+        // chosen so a rate whose only candidates carry disallowed depths is never selected.
         var effectiveFormats = supportedFormats;
         var allowListApplied = false;
         var allowList = allowedSampleRates?.Where(rate => rate > 0).ToHashSet();
@@ -35,6 +38,18 @@ public static class FormatSelectionPolicy
             {
                 effectiveFormats = restricted;
                 allowListApplied = true;
+            }
+        }
+
+        var depthAllowList = allowedBitDepths?.Where(depth => depth > 0).ToHashSet();
+        if (depthAllowList is { Count: > 0 })
+        {
+            var depthRestricted = effectiveFormats
+                .Where(candidate => depthAllowList.Contains(candidate.BitDepth))
+                .ToList();
+            if (depthRestricted.Count > 0)
+            {
+                effectiveFormats = depthRestricted;
             }
         }
 
