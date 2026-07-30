@@ -5,7 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0-beta.6] - 2026-07-30
+
+### Added
+
+- Successful catalog matches are cached locally (`format-cache.json`), so
+  repeat plays of the same track switch instantly without a network lookup.
+  The cache is capped, versioned, scoped to the Apple Music storefront, and
+  re-verified in the background on a configurable refresh interval
+  (`formatCacheRefreshDays`); a "Clear catalog cache" button in the app
+  window resets it. Contributed by @memoz.
+- A toast notifies when a background re-check finds a track's format changed
+  ("applies next playback").
 
 ### Changed
 
