@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window resets it. Contributed by @memoz.
 - A toast notifies when a background re-check finds a track's format changed
   ("applies next playback").
+- New `allowedSampleRates` setting: an allow-list of rates your physical
+  hardware accepts. Resolved rates are clamped to the list (preferring the
+  same 44.1/48 family) before being applied — for chains where a virtual
+  cable or ASIO bridge between the switched endpoint and the real DAC
+  reports rates the hardware can't lock to (#7). Proposed and prototyped
+  by @mg42ns.
 
 ### Changed
 

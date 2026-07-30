@@ -1760,7 +1760,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             supportedFormats,
             Settings.SwitchBitDepth,
             Settings.DefaultBitDepth,
-            Settings.PreferClosestSampleRateMultiple);
+            Settings.PreferClosestSampleRateMultiple,
+            Settings.AllowedSampleRates);
 
         if (selectedFormat is not null)
         {

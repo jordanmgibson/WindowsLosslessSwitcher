@@ -27,6 +27,7 @@ public sealed class SettingsServiceTests
                 EnableSwitchToasts = true,
                 IncludeTrackMetadataInSwitchToasts = true,
                 FormatCacheRefreshDays = 60,
+                AllowedSampleRates = [44100, 48000, 96000],
                 OriginalTarget = new OriginalTargetSnapshot(
                     "device-1",
                     "USB DAC",
@@ -45,6 +46,7 @@ public sealed class SettingsServiceTests
             Assert.DoesNotContain("originalTargetDeviceId", json, StringComparison.Ordinal);
             Assert.Equal(settings.OriginalTarget, loaded.OriginalTarget);
             Assert.Equal(60, loaded.FormatCacheRefreshDays);
+            Assert.Equal([44100, 48000, 96000], loaded.AllowedSampleRates);
         }
         finally
         {
@@ -53,6 +55,18 @@ public sealed class SettingsServiceTests
                 Directory.Delete(settingsDirectory, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void AllowedSampleRates_DropsInvalidEntriesAndNormalizesOrder()
+    {
+        // A hand-edited settings file may contain junk; the setter keeps only positive, distinct
+        // rates in ascending order, and null resets to unrestricted.
+        var settings = new AppSettings { AllowedSampleRates = [96000, -5, 0, 44100, 96000] };
+        Assert.Equal([44100, 96000], settings.AllowedSampleRates);
+
+        settings.AllowedSampleRates = null!;
+        Assert.Empty(settings.AllowedSampleRates);
     }
 
     [Theory]

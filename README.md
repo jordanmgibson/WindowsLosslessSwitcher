@@ -104,6 +104,13 @@ Settings are stored at `%APPDATA%\WindowsLosslessSwitcher\settings.json`. The ca
   // Useful for DACs that handle 44.1/88.2/176.4 kHz more cleanly than mixed-rate output.
   "preferClosestSampleRateMultiple": false,
 
+  // Optional allow-list of sample rates (Hz) your physical hardware accepts. When set, resolved
+  // rates are clamped to this list before being applied (preferring the same 44.1/48 family, so
+  // 88.2 clamps to 44.1 rather than 96). Use this when a virtual cable or ASIO bridge sits
+  // between the switched endpoint and the real DAC and reports rates the hardware can't lock to.
+  // Leave empty for unrestricted selection.
+  "allowedSampleRates": [],
+
   // Show a brief popup toast in the corner of the screen when a new format is applied.
   "enableSwitchToasts": false,
 

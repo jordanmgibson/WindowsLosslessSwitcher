@@ -18,6 +18,7 @@ public sealed class AppSettings
 {
     private int _defaultBitDepth = 24;
     private int _formatCacheRefreshDays = 30;
+    private List<int> _allowedSampleRates = [];
 
     public DeviceSelectionMode DeviceSelectionMode { get; set; } = DeviceSelectionMode.FollowDefault;
 
@@ -28,6 +29,20 @@ public sealed class AppSettings
     public bool SwitchBitDepth { get; set; } = true;
 
     public bool PreferClosestSampleRateMultiple { get; set; }
+
+    /// <summary>
+    /// Optional allow-list of sample rates (Hz) the physical hardware accepts. When non-empty,
+    /// resolved rates are clamped to this list before being applied — for chains where a virtual
+    /// cable or bridge between the switched endpoint and the real DAC reports capabilities the
+    /// hardware does not have. Empty (the default) leaves rate selection unrestricted.
+    /// </summary>
+    public List<int> AllowedSampleRates
+    {
+        get => _allowedSampleRates;
+        set => _allowedSampleRates = value is null
+            ? []
+            : value.Where(rate => rate > 0).Distinct().OrderBy(rate => rate).ToList();
+    }
 
     public int DefaultBitDepth
     {
