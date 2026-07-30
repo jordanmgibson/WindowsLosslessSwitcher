@@ -383,7 +383,8 @@ public sealed class FormatCacheStoreTests : IDisposable
         Directory.CreateDirectory(_directory);
         File.WriteAllText(
             _cachePath,
-            $"{{\"schemaVersion\":1,\"catalogResolverVersion\":1,\"entries\":{{{string.Join(",", entryJsonPairs)}}}}}");
+            $"{{\"schemaVersion\":1,\"catalogResolverVersion\":{FormatCacheStore.CatalogResolverVersion}," +
+            $"\"entries\":{{{string.Join(",", entryJsonPairs)}}}}}");
     }
 
     private static string BuildEntryJson(string key, DateTimeOffset lastVerifiedAtUtc) =>

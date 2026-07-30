@@ -131,6 +131,13 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
     /// </summary>
     internal bool WritesToCacheStore => _formatCacheStore is not null;
 
+    /// <summary>
+    /// The resolved storefront this instance searches. Cache keys are storefront-scoped, so the
+    /// cache reader must be constructed with this exact value — a mismatch silently misses on
+    /// every lookup while the writer files entries the reader never sees.
+    /// </summary>
+    internal string Storefront => _storefront;
+
     public async Task<ResolvedAudioFormat?> ResolveAsync(TrackSnapshot track, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(track.Title) || string.IsNullOrWhiteSpace(track.Artist))

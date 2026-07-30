@@ -14,7 +14,7 @@ public sealed class FormatCacheStore
 
     // Bump this whenever catalog matching, metadata normalization, cache-key construction,
     // or manifest format selection changes in a way that can alter a cached result.
-    internal const int CatalogResolverVersion = 1;
+    internal const int CatalogResolverVersion = 2;
 
     // The whole document is rewritten and fsynced on every store, and Store runs on the
     // track-processing path, so the file must stay bounded. Oldest-verified entries are evicted
