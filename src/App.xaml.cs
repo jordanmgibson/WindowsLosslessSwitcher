@@ -118,7 +118,9 @@ public partial class App : Application
             _settings.AppleMusicStorefront);
         var resolverChain = new ResolverChain(
             [
-                new FormatCacheResolver(formatCacheStore, _logger),
+                // The cache reader must use the writer's storefront: keys are storefront-scoped,
+                // and a mismatch silently misses on every lookup.
+                new FormatCacheResolver(formatCacheStore, _logger, catalogResolver.Storefront),
                 catalogResolver,
                 new LocalDeviceMaxResolver(
                     audioEndpointController,
