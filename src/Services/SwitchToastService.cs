@@ -5,7 +5,11 @@ namespace WindowsLosslessSwitcher.Services;
 
 public sealed class SwitchToastService : IDisposable
 {
-    private readonly Queue<FormatCacheToastRequest> _pendingFormatCacheUpdates = new();
+    // A skip-heavy session can enqueue cache updates faster than switch toasts let them drain;
+    // beyond this the oldest are stale enough that showing them would just be noise.
+    private const int MaxPendingFormatCacheUpdates = 3;
+
+    private readonly List<FormatCacheToastRequest> _pendingFormatCacheUpdates = new();
     private readonly Func<string, string, string?, string?, ISwitchToastWindow> _createToast;
     private readonly Func<bool> _checkAccess;
     private readonly Action<Action> _invoke;
@@ -90,7 +94,7 @@ public sealed class SwitchToastService : IDisposable
 
         if (_currentToast is not null)
         {
-            _pendingFormatCacheUpdates.Enqueue(request);
+            EnqueuePendingFormatCacheUpdate(request);
             return;
         }
 
@@ -117,8 +121,7 @@ public sealed class SwitchToastService : IDisposable
         _currentToast = toast;
         _currentToastKind = ToastKind.Switch;
         previousToast?.Close();
-        toast.Show();
-        toast.StartAutoClose();
+        ShowCurrentToast(toast);
     }
 
     private void ShowFormatCacheToast(FormatCacheToastRequest request)
@@ -131,8 +134,47 @@ public sealed class SwitchToastService : IDisposable
             request.Track);
         _currentToast = toast;
         _currentToastKind = ToastKind.FormatCacheUpdate;
-        toast.Show();
-        toast.StartAutoClose();
+        ShowCurrentToast(toast);
+    }
+
+    // A Show() that throws (window creation during shutdown, display topology change) must not
+    // leave the dead window registered as current: its Closed event will never fire, and every
+    // later cache-update toast would queue behind it forever.
+    private void ShowCurrentToast(ISwitchToastWindow toast)
+    {
+        try
+        {
+            toast.Show();
+            toast.StartAutoClose();
+        }
+        catch
+        {
+            if (ReferenceEquals(_currentToast, toast))
+            {
+                _currentToast = null;
+                _currentToastKind = null;
+            }
+
+            throw;
+        }
+    }
+
+    private void EnqueuePendingFormatCacheUpdate(FormatCacheToastRequest request)
+    {
+        // Latest update wins per track: a queued stale entry for the same track would show an
+        // outdated transition once the queue drains.
+        var key = request.Track?.UniqueKey;
+        if (key is not null)
+        {
+            _pendingFormatCacheUpdates.RemoveAll(pending =>
+                string.Equals(pending.Track?.UniqueKey, key, StringComparison.Ordinal));
+        }
+
+        _pendingFormatCacheUpdates.Add(request);
+        while (_pendingFormatCacheUpdates.Count > MaxPendingFormatCacheUpdates)
+        {
+            _pendingFormatCacheUpdates.RemoveAt(0);
+        }
     }
 
     private ISwitchToastWindow CreateToast(
@@ -166,7 +208,9 @@ public sealed class SwitchToastService : IDisposable
             return;
         }
 
-        ShowFormatCacheToast(_pendingFormatCacheUpdates.Dequeue());
+        var next = _pendingFormatCacheUpdates[0];
+        _pendingFormatCacheUpdates.RemoveAt(0);
+        ShowFormatCacheToast(next);
     }
 
     private void DiscardPendingFormatCacheUpdatesCore()

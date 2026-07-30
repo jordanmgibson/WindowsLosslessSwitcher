@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.Json;
 using WindowsLosslessSwitcher.Abstractions;
 using WindowsLosslessSwitcher.Models;
@@ -59,6 +59,12 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
     }
 
     public string Name => "AppleMusicCatalogResolver";
+
+    /// <summary>
+    /// True when catalog resolutions are persisted to a format cache store as a side effect.
+    /// FormatCacheVerificationService requires a resolver where this is false.
+    /// </summary>
+    internal bool WritesToCacheStore => _formatCacheStore is not null;
 
     public async Task<ResolvedAudioFormat?> ResolveAsync(TrackSnapshot track, CancellationToken cancellationToken)
     {

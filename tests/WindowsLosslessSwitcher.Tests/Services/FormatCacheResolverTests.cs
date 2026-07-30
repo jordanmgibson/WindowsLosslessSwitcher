@@ -103,9 +103,19 @@ public sealed class FormatCacheResolverTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_directory))
+        try
         {
-            Directory.Delete(_directory, recursive: true);
+            if (Directory.Exists(_directory))
+            {
+                Directory.Delete(_directory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // Cleanup failure (file briefly held by a scanner) must not fail a passing test.
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

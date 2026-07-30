@@ -24,6 +24,7 @@ public partial class App : Application
     private MainWindow? _mainWindow;
     private SwitchingCoordinator? _coordinator;
     private FormatCacheStore? _formatCacheStore;
+    private bool _clearFormatCacheInFlight;
     private AppSettings? _settings;
     private SwitchingStatus? _latestStatus;
 
@@ -106,6 +107,9 @@ public partial class App : Application
         var formatCacheStore = new FormatCacheStore(_logger);
         _formatCacheStore = formatCacheStore;
         var catalogResolver = new AppleMusicCatalogResolver(_logger, formatCacheStore);
+        // Deliberately store-less: the verification path applies results via a compare-and-swap in
+        // FormatCacheStore, which a store-backed resolver would defeat by rewriting the entry during
+        // the lookup. FormatCacheVerificationService rejects a store-backed resolver at construction.
         var catalogResolverForCacheVerification = new AppleMusicCatalogResolver(_logger);
         var resolverChain = new ResolverChain(
             [
@@ -285,16 +289,33 @@ public partial class App : Application
 
     private void OnRestoreOriginalFormatRequested() => _ = RestoreOriginalFormatAsync();
 
-    private void OnClearFormatCacheRequested()
+    private async void OnClearFormatCacheRequested()
     {
-        if (_formatCacheStore?.Clear() == true)
+        // Clear() serializes and fsyncs the cache file under the store lock and can block behind an
+        // in-flight background Store, so it must not run on the UI thread.
+        if (_clearFormatCacheInFlight)
         {
-            _switchToastService?.DiscardPendingFormatCacheUpdates();
-            _viewModel.FormatCacheStatusText = "Cache cleared. Formats will be cached again as tracks play.";
             return;
         }
 
-        _viewModel.FormatCacheStatusText = "The cache could not be cleared. See diagnostics for details.";
+        _clearFormatCacheInFlight = true;
+        try
+        {
+            var store = _formatCacheStore;
+            var cleared = store is not null && await Task.Run(store.Clear);
+            if (cleared)
+            {
+                _switchToastService?.DiscardPendingFormatCacheUpdates();
+                _viewModel.FormatCacheStatusText = "Cache cleared. Formats will be cached again as tracks play.";
+                return;
+            }
+
+            _viewModel.FormatCacheStatusText = "The cache could not be cleared. See diagnostics for details.";
+        }
+        finally
+        {
+            _clearFormatCacheInFlight = false;
+        }
     }
 
     private void RefreshDevices()

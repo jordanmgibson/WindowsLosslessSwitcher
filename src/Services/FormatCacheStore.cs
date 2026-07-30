@@ -16,11 +16,15 @@ public sealed class FormatCacheStore
     // or manifest format selection changes in a way that can alter a cached result.
     internal const int CatalogResolverVersion = 1;
 
+    // The whole document is rewritten and fsynced on every store, and Store runs on the
+    // track-processing path, so the file must stay bounded. Oldest-verified entries are evicted
+    // first: they are the ones a future hit would re-verify anyway.
+    internal const int MaxEntries = 2048;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
@@ -30,6 +34,7 @@ public sealed class FormatCacheStore
     private Dictionary<string, FormatCacheEntry> _entries = new(StringComparer.Ordinal);
     private bool _initialized;
     private bool _loadFailureLogged;
+    private bool _temporaryFilesSwept;
     private long _clearGeneration;
 
     public FormatCacheStore()
@@ -88,6 +93,7 @@ public sealed class FormatCacheStore
                 ? current.CachedAtUtc
                 : storedAtUtc;
             candidate[uniqueKey] = CreateEntry(uniqueKey, format, cachedAtUtc, storedAtUtc);
+            EvictOldestBeyondCap(candidate);
 
             if (!TryPersist(candidate))
             {
@@ -161,12 +167,50 @@ public sealed class FormatCacheStore
         }
     }
 
+    /// <summary>
+    /// Bumps <see cref="FormatCacheEntry.LastVerifiedAtUtc"/> on <paramref name="expectedEntry"/>
+    /// without changing the cached format. Used when a verification lookup fails so the retry
+    /// waits for the next refresh window instead of firing on every playback. Same compare-and-swap
+    /// contract as <see cref="TryApplyVerification(FormatCacheEntry, ResolvedAudioFormat)"/>: a
+    /// superseded or cleared entry is left untouched.
+    /// </summary>
+    internal bool TryTouchVerification(FormatCacheEntry expectedEntry, DateTimeOffset verifiedAtUtc)
+    {
+        ArgumentNullException.ThrowIfNull(expectedEntry);
+
+        lock (_sync)
+        {
+            if (!EnsureInitialized())
+            {
+                return false;
+            }
+
+            if (!_entries.TryGetValue(expectedEntry.UniqueKey, out var current) || current != expectedEntry)
+            {
+                return false;
+            }
+
+            var candidate = CopyEntries();
+            candidate[expectedEntry.UniqueKey] = current with { LastVerifiedAtUtc = verifiedAtUtc };
+
+            if (!TryPersist(candidate))
+            {
+                return false;
+            }
+
+            _entries = candidate;
+            return true;
+        }
+    }
+
     public bool Clear()
     {
         lock (_sync)
         {
-            // Clearing is valid even when the on-disk cache cannot be read: the point is to
-            // replace whatever is there with an empty cache.
+            // Clearing never needs the old content — it replaces whatever is on disk with an empty
+            // cache — so it works even when the file cannot be read. It can still fail if the file
+            // cannot be replaced either (held open without delete sharing); that failure is
+            // reported to the caller rather than papered over.
             var candidate = new Dictionary<string, FormatCacheEntry>(StringComparer.Ordinal);
             if (!TryPersist(candidate))
             {
@@ -175,11 +219,32 @@ public sealed class FormatCacheStore
 
             _entries = candidate;
             _initialized = true;
+            _loadFailureLogged = false;
             _clearGeneration++;
         }
 
         TryLogInfo("Catalog format cache cleared.");
         return true;
+    }
+
+    private void EvictOldestBeyondCap(Dictionary<string, FormatCacheEntry> candidate)
+    {
+        if (candidate.Count <= MaxEntries)
+        {
+            return;
+        }
+
+        var evicted = candidate.Values
+            .OrderBy(entry => entry.LastVerifiedAtUtc)
+            .ThenBy(entry => entry.UniqueKey, StringComparer.Ordinal)
+            .Take(candidate.Count - MaxEntries)
+            .ToList();
+        foreach (var entry in evicted)
+        {
+            candidate.Remove(entry.UniqueKey);
+        }
+
+        TryLogInfo($"Catalog format cache evicted {evicted.Count} oldest entr{(evicted.Count == 1 ? "y" : "ies")} to stay within {MaxEntries}.");
     }
 
     private bool EnsureInitialized()
@@ -205,12 +270,14 @@ public sealed class FormatCacheStore
             {
                 TryLogWarning("Catalog format cache has an unsupported version and will be rebuilt.");
             }
-            else if (!TryValidateEntries(document.Entries, out var entries))
-            {
-                TryLogWarning("Catalog format cache contains invalid entries and will be rebuilt.");
-            }
             else
             {
+                var entries = ValidateEntries(document.Entries, out var skipped);
+                if (skipped > 0)
+                {
+                    TryLogWarning($"Catalog format cache skipped {skipped} invalid entr{(skipped == 1 ? "y" : "ies")}; {entries.Count} kept.");
+                }
+
                 _entries = entries;
             }
         }
@@ -248,6 +315,8 @@ public sealed class FormatCacheStore
                 Directory.CreateDirectory(directory);
             }
 
+            SweepOrphanedTemporaryFiles(directory);
+
             var document = new FormatCacheDocument(SchemaVersion, CatalogResolverVersion, entries);
             using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
@@ -276,6 +345,37 @@ public sealed class FormatCacheStore
         }
     }
 
+    // Removes temp files left behind by a crash or power loss between create and rename. Runs once
+    // per store instance, ahead of the first write, so a burst of stores does not rescan the
+    // directory every time.
+    private void SweepOrphanedTemporaryFiles(string? directory)
+    {
+        if (_temporaryFilesSwept || string.IsNullOrWhiteSpace(directory))
+        {
+            return;
+        }
+
+        _temporaryFilesSwept = true;
+        try
+        {
+            foreach (var orphan in Directory.EnumerateFiles(directory, $"{Path.GetFileName(_cachePath)}.*.tmp"))
+            {
+                try
+                {
+                    File.Delete(orphan);
+                }
+                catch
+                {
+                    // Possibly held by a concurrent writer; the next sweep gets it.
+                }
+            }
+        }
+        catch
+        {
+            // Enumeration failure is non-fatal; orphans are harmless.
+        }
+    }
+
     private Dictionary<string, FormatCacheEntry> CopyEntries() =>
         new(_entries, StringComparer.Ordinal);
 
@@ -294,14 +394,17 @@ public sealed class FormatCacheStore
             cachedAtUtc,
             lastVerifiedAtUtc);
 
-    private static bool TryValidateEntries(
+    // Invalid pairs are skipped rather than rejecting the whole document: one truncated or
+    // hand-edited entry should not throw away every other valid cached format.
+    private static Dictionary<string, FormatCacheEntry> ValidateEntries(
         Dictionary<string, FormatCacheEntry>? persistedEntries,
-        out Dictionary<string, FormatCacheEntry> entries)
+        out int skipped)
     {
-        entries = new Dictionary<string, FormatCacheEntry>(StringComparer.Ordinal);
+        skipped = 0;
+        var entries = new Dictionary<string, FormatCacheEntry>(StringComparer.Ordinal);
         if (persistedEntries is null)
         {
-            return false;
+            return entries;
         }
 
         foreach (var pair in persistedEntries)
@@ -317,13 +420,14 @@ public sealed class FormatCacheStore
                 entry.CachedAtUtc == default ||
                 entry.LastVerifiedAtUtc == default)
             {
-                return false;
+                skipped++;
+                continue;
             }
 
             entries.Add(pair.Key, entry);
         }
 
-        return true;
+        return entries;
     }
 
     private void TryLogInfo(string message)

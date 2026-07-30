@@ -889,6 +889,57 @@ public sealed class SwitchingCoordinatorTests
     }
 
     [Fact]
+    public async Task TrackChange_WhenCachedEntryIsFresh_SchedulesNoVerification()
+    {
+        // The refresh-days guard is the only thing standing between a cache hit and a background
+        // Apple Music lookup on every playback; a settings-propagation regression here would be
+        // invisible without this negative.
+        var track = CreateTrack();
+        var directory = CreateTemporaryDirectoryPath();
+
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var cacheStore = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            Assert.True(cacheStore.Store(
+                FormatCacheKey.Create("us", track),
+                CreateResolvedFormat(CurrentFormat, AudioFormatSource.CatalogManifest, "song-123")));
+
+            var verificationCalls = 0;
+            var verificationResolver = new DelegateResolver((_, _) =>
+            {
+                Interlocked.Increment(ref verificationCalls);
+                return Task.FromResult<ResolvedAudioFormat?>(null);
+            });
+            var trackSource = new TestTrackSource();
+            var mediaTransportController = new TestMediaTransportController();
+            var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat]);
+            var resolver = new FormatCacheResolver(cacheStore, logger);
+
+            await using var coordinator = CreateCoordinator(
+                trackSource,
+                mediaTransportController,
+                audioEndpointController,
+                resolver,
+                formatCacheStore: cacheStore,
+                catalogResolverForCacheVerification: verificationResolver);
+            await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+
+            var status = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: CachedCatalog");
+            trackSource.RaiseTrackChanged(track);
+            await status.WaitAsync(DefaultTimeout);
+
+            // Verification scheduling happens before the awaited status is published, so a zero
+            // count here proves the fresh entry scheduled nothing rather than racing it.
+            Assert.Equal(0, Volatile.Read(ref verificationCalls));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task DisposeAsync_CancelsAndAwaitsCacheVerification()
     {
         var track = CreateTrack();
@@ -1022,9 +1073,19 @@ public sealed class SwitchingCoordinatorTests
 
     private static void DeleteDirectory(string directory)
     {
-        if (Directory.Exists(directory))
+        try
         {
-            Directory.Delete(directory, recursive: true);
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // Cleanup failure (file briefly held by a scanner) must not fail a passing test.
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

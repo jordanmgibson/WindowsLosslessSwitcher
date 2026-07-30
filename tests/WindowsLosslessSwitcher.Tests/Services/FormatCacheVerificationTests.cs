@@ -39,9 +39,33 @@ public sealed class FormatCacheVerificationTests : IDisposable
     }
 
     [Fact]
+    public void IsVerificationDue_ReturnsTrueForFutureTimestamp()
+    {
+        // An entry verified "in the future" was written under a wrong clock (dead RTC before NTP
+        // sync); without this it would not re-verify for decades.
+        var entry = CreateEntry(lastVerifiedAtUtc: DateTimeOffset.UtcNow.AddYears(4));
+
+        Assert.True(FormatCacheVerificationService.IsVerificationDue(entry, refreshDays: 30));
+    }
+
+    [Fact]
+    public void Constructor_RejectsStoreBackedResolver()
+    {
+        // A resolver that writes to the store during the lookup would supersede the entry the
+        // compare-and-swap expects, so every verification would silently report "superseded".
+        var storeBackedResolver = new AppleMusicCatalogResolver(_logger, _store);
+
+        Assert.Throws<ArgumentException>(() =>
+            new FormatCacheVerificationService(_store, storeBackedResolver, _logger));
+    }
+
+    [Fact]
     public async Task VerifyAsync_UpdatesStoreAndReturnsEventArgsWhenFormatChanges()
     {
         var track = CreateTrack();
+        // Advance the clear generation past its default so the CacheGeneration assertions below
+        // compare against a value a regression cannot accidentally produce.
+        Assert.True(_store.Clear());
         var entry = StoreStaleEntry(track, CreateCatalogFormat(96000, 24, "song-123"));
         var service = new FormatCacheVerificationService(
             _store,
@@ -58,9 +82,13 @@ public sealed class FormatCacheVerificationTests : IDisposable
         Assert.NotNull(stored);
         Assert.Equal(entry.CachedAtUtc, stored.CachedAtUtc);
         Assert.Equal(192000, stored.SampleRateHz);
-        Assert.Equal(_store.ClearGeneration, update.CacheGeneration);
+        // The fixture cleared once before storing, so the expected generation is a specific
+        // non-zero value — a hardcoded CacheGeneration of 0 must fail here.
+        Assert.Equal(1, update.CacheGeneration);
+        Assert.Equal(1, _store.ClearGeneration);
         Assert.True(_store.Clear());
-        Assert.NotEqual(_store.ClearGeneration, update.CacheGeneration);
+        Assert.Equal(2, _store.ClearGeneration);
+        Assert.Equal(1, update.CacheGeneration);
     }
 
     [Fact]
@@ -89,10 +117,11 @@ public sealed class FormatCacheVerificationTests : IDisposable
     }
 
     [Fact]
-    public async Task VerifyAsync_ReturnsNullWithoutMutationWhenCatalogLookupFails()
+    public async Task VerifyAsync_KeepsFormatAndDefersRetryWhenCatalogLookupFails()
     {
         var track = CreateTrack();
         var entry = StoreStaleEntry(track, CreateCatalogFormat(96000, 24, "song-123"));
+        Assert.True(FormatCacheVerificationService.IsVerificationDue(entry, refreshDays: 30));
         var service = new FormatCacheVerificationService(
             _store,
             new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(null)),
@@ -100,9 +129,16 @@ public sealed class FormatCacheVerificationTests : IDisposable
 
         var update = await service.VerifyAsync(track, entry, CancellationToken.None);
 
+        // The cached format survives, but the verification timestamp moves forward — otherwise a
+        // delisted or unmatchable track would re-verify on every single playback.
         Assert.Null(update);
         Assert.True(_store.TryGet(entry.UniqueKey, out var stored));
-        Assert.Equal(entry, stored);
+        Assert.NotNull(stored);
+        Assert.Equal(entry.SampleRateHz, stored.SampleRateHz);
+        Assert.Equal(entry.BitDepth, stored.BitDepth);
+        Assert.Equal(entry.CachedAtUtc, stored.CachedAtUtc);
+        Assert.True(stored.LastVerifiedAtUtc > entry.LastVerifiedAtUtc);
+        Assert.False(FormatCacheVerificationService.IsVerificationDue(stored, refreshDays: 30));
     }
 
     [Fact]
@@ -132,9 +168,19 @@ public sealed class FormatCacheVerificationTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_directory))
+        try
         {
-            Directory.Delete(_directory, recursive: true);
+            if (Directory.Exists(_directory))
+            {
+                Directory.Delete(_directory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // Cleanup failure (file briefly held by a scanner) must not fail a passing test.
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

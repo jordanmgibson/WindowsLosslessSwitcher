@@ -167,35 +167,170 @@ public sealed class FormatCacheStoreTests : IDisposable
         Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
 
         var reloaded = new FormatCacheStore(_cachePath, null);
-        using (new FileStream(_cachePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        // The discriminating assertions are the post-unlock ones: a store that latched itself
+        // initialized-empty during the failed read would keep returning misses (and would have
+        // been willing to persist that empty state), while the guarded store retries the read and
+        // recovers the intact entries.
+        using (new FileStream(_cachePath, FileMode.Open, FileAccess.Read, FileShare.Delete))
         {
             Assert.False(reloaded.TryGet("cache-key", out _));
             Assert.False(reloaded.Store("other-key", CreateCatalogFormat(48000, 24, "song-456")));
         }
 
-        Assert.True(reloaded.TryGet("cache-key", out var preserved));
+        // The on-disk document was never replaced while unreadable.
+        var untouched = new FormatCacheStore(_cachePath, null);
+        Assert.True(untouched.TryGet("cache-key", out var preserved));
         Assert.NotNull(preserved);
         Assert.Equal(96000, preserved.SampleRateHz);
+        Assert.False(untouched.TryGet("other-key", out _));
+
+        // And the paused store recovers once the file is readable again.
+        Assert.True(reloaded.TryGet("cache-key", out _));
         Assert.True(reloaded.Store("other-key", CreateCatalogFormat(48000, 24, "song-456")));
         Assert.True(reloaded.TryGet("other-key", out _));
     }
 
     [Fact]
-    public void Clear_WhenCacheFileUnreadable_StillReplacesItWithEmptyCache()
+    public void Clear_ReportsFailureWhileFileIsLockedAndClearsWithoutLoadingAfterRelease()
     {
         Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
 
         var reloaded = new FormatCacheStore(_cachePath, null);
-        using (new FileStream(_cachePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        using (new FileStream(_cachePath, FileMode.Open, FileAccess.Read, FileShare.Delete))
         {
             Assert.False(reloaded.TryGet("cache-key", out _));
+            // Windows cannot rename over an open file, so the empty replacement cannot land while
+            // the lock is held; Clear must report the failure rather than pretend.
+            Assert.False(reloaded.Clear());
         }
 
-        // Clear succeeds without ever having loaded the file and leaves an empty cache behind.
+        // Once the lock is released, Clear succeeds without ever having read the old content.
         Assert.True(reloaded.Clear());
         Assert.False(reloaded.TryGet("cache-key", out _));
         var fresh = new FormatCacheStore(_cachePath, null);
         Assert.False(fresh.TryGet("cache-key", out _));
+
+        // Clear leaves the store initialized: a document written behind its back must not be
+        // re-read (this process is the sole writer of the cache file).
+        WriteCacheDocument(BuildEntryJson("cache-key", DateTimeOffset.UtcNow));
+        Assert.False(reloaded.TryGet("cache-key", out _));
+    }
+
+    [Fact]
+    public void Load_SkipsInvalidEntriesAndKeepsValidOnes()
+    {
+        WriteCacheDocument(
+            BuildEntryJson("good-key", DateTimeOffset.UtcNow),
+            // Key/UniqueKey mismatch: a cross-key-poisoned pair is dropped, not fatal.
+            "\"mismatched\":{\"uniqueKey\":\"other\",\"sampleRateHz\":96000,\"bitDepth\":24,\"confidence\":\"exact\",\"description\":\"d\",\"cachedAtUtc\":\"2026-01-01T00:00:00+00:00\",\"lastVerifiedAtUtc\":\"2026-01-01T00:00:00+00:00\"}",
+            "\"zero-rate\":{\"uniqueKey\":\"zero-rate\",\"sampleRateHz\":0,\"bitDepth\":24,\"confidence\":\"exact\",\"description\":\"d\",\"cachedAtUtc\":\"2026-01-01T00:00:00+00:00\",\"lastVerifiedAtUtc\":\"2026-01-01T00:00:00+00:00\"}",
+            "\"null-entry\":null");
+        var store = new FormatCacheStore(_cachePath, null);
+
+        Assert.True(store.TryGet("good-key", out _));
+        Assert.False(store.TryGet("mismatched", out _));
+        Assert.False(store.TryGet("zero-rate", out _));
+        Assert.False(store.TryGet("null-entry", out _));
+    }
+
+    [Fact]
+    public void Store_EvictsOldestVerifiedEntriesBeyondCap()
+    {
+        var baseTime = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        WriteCacheDocument(Enumerable.Range(0, FormatCacheStore.MaxEntries)
+            .Select(i => BuildEntryJson($"key-{i:D4}", baseTime.AddMinutes(i)))
+            .ToArray());
+        var store = new FormatCacheStore(_cachePath, null);
+
+        Assert.True(store.Store("new-key", CreateCatalogFormat(96000, 24, "song-new")));
+
+        Assert.False(store.TryGet("key-0000", out _));
+        Assert.True(store.TryGet("key-0001", out _));
+        Assert.True(store.TryGet("new-key", out _));
+
+        var reloaded = new FormatCacheStore(_cachePath, null);
+        Assert.False(reloaded.TryGet("key-0000", out _));
+        Assert.True(reloaded.TryGet("new-key", out _));
+    }
+
+    [Fact]
+    public void TryTouchVerification_BumpsLastVerifiedWithoutChangingFormat()
+    {
+        Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
+        Assert.True(_store.TryGet("cache-key", out var original));
+        Assert.NotNull(original);
+        var touchedAt = original.LastVerifiedAtUtc.AddDays(1);
+
+        Assert.True(_store.TryTouchVerification(original, touchedAt));
+
+        Assert.True(_store.TryGet("cache-key", out var touched));
+        Assert.NotNull(touched);
+        Assert.Equal(touchedAt, touched.LastVerifiedAtUtc);
+        Assert.Equal(original.SampleRateHz, touched.SampleRateHz);
+        Assert.Equal(original.BitDepth, touched.BitDepth);
+        Assert.Equal(original.CatalogSongId, touched.CatalogSongId);
+        Assert.Equal(original.CachedAtUtc, touched.CachedAtUtc);
+
+        var reloaded = new FormatCacheStore(_cachePath, null);
+        Assert.True(reloaded.TryGet("cache-key", out var persisted));
+        Assert.NotNull(persisted);
+        Assert.Equal(touchedAt, persisted.LastVerifiedAtUtc);
+    }
+
+    [Fact]
+    public void TryTouchVerification_IsSupersededByClearAndNewerStore()
+    {
+        Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
+        Assert.True(_store.TryGet("cache-key", out var original));
+        Assert.NotNull(original);
+
+        Assert.True(_store.Clear());
+        Assert.False(_store.TryTouchVerification(original, DateTimeOffset.UtcNow));
+        Assert.False(_store.TryGet("cache-key", out _));
+
+        Assert.True(_store.Store("cache-key", CreateCatalogFormat(48000, 24, "song-new")));
+        Assert.True(_store.TryGet("cache-key", out var replacement));
+        Assert.NotNull(replacement);
+        Assert.False(_store.TryTouchVerification(original, DateTimeOffset.UtcNow));
+        Assert.True(_store.TryGet("cache-key", out var current));
+        Assert.Equal(replacement, current);
+    }
+
+    [Fact]
+    public void ParallelStoreClearAndTouch_KeepsDocumentConsistent()
+    {
+        // Production runs Store on track-processing threads while verification touches and the UI
+        // clears against the same file; this pins "no torn document, no leftover temp files".
+        Parallel.For(0, 32, i =>
+        {
+            _store.Store($"key-{i}", CreateCatalogFormat(96000, 24, $"song-{i}"));
+            if (i % 11 == 0)
+            {
+                _store.Clear();
+            }
+
+            if (_store.TryGet($"key-{i}", out var entry) && entry is not null)
+            {
+                _store.TryTouchVerification(entry, DateTimeOffset.UtcNow);
+            }
+        });
+
+        Assert.True(_store.Store("final-key", CreateCatalogFormat(192000, 24, "song-final")));
+        var reloaded = new FormatCacheStore(_cachePath, null);
+        Assert.True(reloaded.TryGet("final-key", out _));
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
+    }
+
+    [Fact]
+    public void Store_SweepsOrphanedTemporaryFiles()
+    {
+        Directory.CreateDirectory(_directory);
+        var orphan = $"{_cachePath}.deadbeef.tmp";
+        File.WriteAllText(orphan, "{}");
+
+        Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
+
+        Assert.False(File.Exists(orphan));
     }
 
     [Fact]
@@ -226,11 +361,35 @@ public sealed class FormatCacheStoreTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_directory))
+        try
         {
-            Directory.Delete(_directory, recursive: true);
+            if (Directory.Exists(_directory))
+            {
+                Directory.Delete(_directory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // A scanner or indexer may briefly hold a just-written file; leftover temp dirs are
+            // harmless and must not fail an otherwise-passing test.
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
+
+    private void WriteCacheDocument(params string[] entryJsonPairs)
+    {
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(
+            _cachePath,
+            $"{{\"schemaVersion\":1,\"catalogResolverVersion\":1,\"entries\":{{{string.Join(",", entryJsonPairs)}}}}}");
+    }
+
+    private static string BuildEntryJson(string key, DateTimeOffset lastVerifiedAtUtc) =>
+        $"\"{key}\":{{\"uniqueKey\":\"{key}\",\"catalogSongId\":\"song\",\"sampleRateHz\":96000,\"bitDepth\":24," +
+        "\"confidence\":\"exact\",\"description\":\"Catalog manifest: 24/96\"," +
+        $"\"cachedAtUtc\":\"2026-01-01T00:00:00+00:00\",\"lastVerifiedAtUtc\":\"{lastVerifiedAtUtc:O}\"}}";
 
     private static TrackSnapshot CreateTrack(string title, string artist, string? album) =>
         new(

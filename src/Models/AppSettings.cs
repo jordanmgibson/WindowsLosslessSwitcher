@@ -88,8 +88,10 @@ public sealed class AppSettings
             return days;
         }
 
+        // Distance in long: with an int, days near int.MinValue (a corrupt settings file) overflows
+        // Math.Abs and inverts the snap.
         return SupportedFormatCacheRefreshDays
-            .OrderBy(option => Math.Abs(option - days))
+            .OrderBy(option => Math.Abs((long)option - days))
             .ThenBy(option => option)
             .First();
     }
