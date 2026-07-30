@@ -24,7 +24,10 @@ namespace WindowsLosslessSwitcher.Services;
 /// </summary>
 public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
 {
-    private static readonly string[] CandidateExtensions = [".mp3", ".m4a"];
+    // Apple Music stores cloud downloads as .mp3/.m4a; .wav/.aiff cover imported lossless library
+    // files that land in the cache. TagLib reads bit depth directly from WAV/AIFF/ALAC headers
+    // (FLAC is transcoded to ALAC on import, so it never appears here as .flac).
+    private static readonly string[] CandidateExtensions = [".mp3", ".m4a", ".wav", ".aiff", ".aif"];
 
     // Observed Apple Music truncation length for Downloads\*.tmp folder names. At or beyond this
     // length the folder name may be a cut-off prefix of "<Title> _ <Album>".
@@ -103,8 +106,8 @@ public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
                 continue;
             }
 
-            _logger.Info($"PlayCache match for '{track.Title}': file in use by Apple Music ({file.Name}) -> {probed.BitDepth}/{probed.SampleRateHz}.");
-            return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName);
+            _logger.Info($"PlayCache match for '{track.Title}': file in use by Apple Music ({file.Name}) -> {DescribeFormat(probed)}.");
+            return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName, probed.Codec);
         }
 
         var freshCutoff = (track.DetectedAtUtc - FreshWriteSlack).UtcDateTime;
@@ -116,8 +119,8 @@ public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
                 continue;
             }
 
-            _logger.Info($"PlayCache match for '{track.Title}': freshly written file ({file.Name}, {file.LastWriteTimeUtc:O}) -> {probed.BitDepth}/{probed.SampleRateHz}.");
-            return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName);
+            _logger.Info($"PlayCache match for '{track.Title}': freshly written file ({file.Name}, {file.LastWriteTimeUtc:O}) -> {DescribeFormat(probed)}.");
+            return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName, probed.Codec);
         }
 
         return null;
@@ -162,8 +165,8 @@ public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
                 continue;
             }
 
-            _logger.Info($"PlayCache match for '{track.Title}': download folder '{folderName}' -> {probed.BitDepth}/{probed.SampleRateHz}.");
-            return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName);
+            _logger.Info($"PlayCache match for '{track.Title}': download folder '{folderName}' -> {DescribeFormat(probed)}.");
+            return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName, probed.Codec);
         }
 
         return null;
@@ -200,8 +203,8 @@ public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
             return null;
         }
 
-        _logger.Info($"PlayCache match for '{track.Title}': cloud-id {entry.CloudId} ({file.Name}) -> {probed.BitDepth}/{probed.SampleRateHz}.");
-        return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName);
+        _logger.Info($"PlayCache match for '{track.Title}': cloud-id {entry.CloudId} ({file.Name}) -> {DescribeFormat(probed)}.");
+        return new LocalTrackFileFormat(probed.SampleRateHz, probed.BitDepth, file.FullName, probed.Codec);
     }
 
     private CacheInfoEntry? ReadNewestCacheInfoEntry()
@@ -317,6 +320,12 @@ public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
         }
 
         return result;
+    }
+
+    private static string DescribeFormat(AudioFileProbeResult probed)
+    {
+        var codec = string.IsNullOrEmpty(probed.Codec) ? string.Empty : $"{probed.Codec} ";
+        return $"{codec}{probed.BitDepth}/{probed.SampleRateHz}";
     }
 
     internal static bool TitleMatchesFolder(string? title, string? album, string folderName)

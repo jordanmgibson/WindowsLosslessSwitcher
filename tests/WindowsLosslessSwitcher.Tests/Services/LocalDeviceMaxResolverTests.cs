@@ -25,8 +25,10 @@ public sealed class LocalDeviceMaxResolverTests
     }
 
     [Fact]
-    public async Task MaxDepthAtFileRate_IsSelectedForLossyFile()
+    public async Task LowestDepthAtFileRate_IsSelectedForLossyFile()
     {
+        // Lossy files report no bit depth; applying the device max (24) would be dishonest, so the
+        // lowest supported depth at the file's rate is used instead.
         var endpoint = new StubEndpoint([new(96000, 16, 2), Rate96_24]);
         var reader = new StubFileFormatReader(new LocalTrackFileFormat(96000, 0, "cache.mp3"));
         var resolver = CreateResolver(endpoint, reader);
@@ -35,7 +37,7 @@ public sealed class LocalDeviceMaxResolverTests
 
         Assert.NotNull(result);
         Assert.Equal(96000, result!.SampleRateHz);
-        Assert.Equal(24, result.BitDepth);
+        Assert.Equal(16, result.BitDepth);
     }
 
     [Fact]
@@ -49,10 +51,41 @@ public sealed class LocalDeviceMaxResolverTests
 
         Assert.NotNull(result);
         Assert.Equal(44100, result!.SampleRateHz);
-        // Lossy file reports no bit depth, so the max depth at the file's rate is applied.
-        Assert.Equal(24, result.BitDepth);
+        // Lossy file reports no bit depth, so the lowest depth at the file's rate is applied.
+        Assert.Equal(16, result.BitDepth);
         Assert.Equal(AudioFormatSource.LocalFile, result.Source);
         Assert.Equal(ResolutionConfidence.Exact, result.Confidence);
+    }
+
+    [Fact]
+    public async Task FileDepthNotOfferedAtRate_UsesSmallestDepthThatContainsIt()
+    {
+        // A 16-bit file on a DAC that only offers 24/32 at the rate gets 24 (bit-perfect via
+        // zero-padding), not the device max of 32.
+        var endpoint = new StubEndpoint([new(44100, 24, 2), new(44100, 32, 2)]);
+        var reader = new StubFileFormatReader(new LocalTrackFileFormat(44100, 16, "cache.m4a", "ALAC"));
+        var resolver = CreateResolver(endpoint, reader);
+
+        var result = await resolver.ResolveAsync(CreateTrack(), CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(44100, result!.SampleRateHz);
+        Assert.Equal(24, result.BitDepth);
+    }
+
+    [Fact]
+    public async Task HiResFileDepth_IsMatchedExactlyOverLowerDepths()
+    {
+        // 24-bit Hi-Res ALAC must apply 24, not be padded up to 32 or truncated to 16.
+        var endpoint = new StubEndpoint([new(96000, 16, 2), Rate96_24, new(96000, 32, 2)]);
+        var reader = new StubFileFormatReader(new LocalTrackFileFormat(96000, 24, "cache.m4a", "ALAC"));
+        var resolver = CreateResolver(endpoint, reader);
+
+        var result = await resolver.ResolveAsync(CreateTrack(), CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(96000, result!.SampleRateHz);
+        Assert.Equal(24, result.BitDepth);
     }
 
     [Fact]

@@ -119,20 +119,36 @@ public sealed class LocalDeviceMaxResolver : IFormatResolver
             return null;
         }
 
+        // atRate is ascending by bit depth (GetSupportedFormats orders by rate then depth), so [0]
+        // is the lowest and [^1] the highest depth the device offers at this rate.
         var atRate = supported.Where(candidate => candidate.SampleRateHz == targetRate.Value).ToList();
 
-        // Match the file's bit depth when the device supports it at that rate; otherwise take the
-        // highest depth available at the rate (lossy files report no depth).
-        var chosen = (fileFormat.BitDepth > 0
-            ? atRate.FirstOrDefault(candidate => candidate.BitDepth == fileFormat.BitDepth)
-            : null) ?? atRate[^1];
+        // Apply the file's true depth, not the device max. When the device supports it exactly, use
+        // it; otherwise take the smallest supported depth that still contains it (e.g. a 16-bit
+        // source on a 24/32-only DAC -> 24, which is bit-perfect via zero-padding, not 32). When the
+        // file reports no depth (lossy AAC/MP3 have none), apply the lowest supported depth — honest
+        // and bit-perfect-equivalent — rather than inflating to the device max.
+        AudioFormatCandidate chosen;
+        if (fileFormat.BitDepth > 0)
+        {
+            chosen = atRate.FirstOrDefault(candidate => candidate.BitDepth == fileFormat.BitDepth)
+                ?? atRate.Where(candidate => candidate.BitDepth >= fileFormat.BitDepth)
+                    .OrderBy(candidate => candidate.BitDepth)
+                    .FirstOrDefault()
+                ?? atRate[^1];
+        }
+        else
+        {
+            chosen = atRate[0];
+        }
 
         if (targetRate.Value != fileFormat.SampleRateHz)
         {
             _logger.Info($"Local device-max resolver: device '{device.FriendlyName}' does not support file rate {fileFormat.SampleRateHz}; downsampling target to {targetRate.Value} (highest supported integer submultiple).");
         }
 
-        _logger.Info($"Local device-max resolver: local track '{track.Title}' matched file with format {fileFormat.BitDepth}/{fileFormat.SampleRateHz} -> applying {chosen.BitDepth}/{chosen.SampleRateHz} on '{device.FriendlyName}'.");
+        var fileCodec = string.IsNullOrEmpty(fileFormat.Codec) ? string.Empty : $"{fileFormat.Codec} ";
+        _logger.Info($"Local device-max resolver: local track '{track.Title}' matched file with format {fileCodec}{fileFormat.BitDepth}/{fileFormat.SampleRateHz} -> applying {chosen.BitDepth}/{chosen.SampleRateHz} on '{device.FriendlyName}'.");
         return new ResolvedAudioFormat(
             chosen.SampleRateHz,
             chosen.BitDepth,
