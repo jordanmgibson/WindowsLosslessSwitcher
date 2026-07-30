@@ -66,7 +66,7 @@ Successful catalog matches are kept in a versioned local cache, scoped to the Ap
 
 1. **Catalog match** — the track is looked up in Apple Music's web catalog; a confident match yields the exact lossless format (for example 24-bit / 96 kHz).
 2. **Local file match** — local-library files and tracks the catalog cannot identify are matched to the actual format of the file in Apple Music's cache.
-3. **Tier fallback** — when neither layer can identify the track, the device is set to a format derived from your Apple Music audio-quality setting (High-Res Lossless → 24-bit / 192 kHz, Lossless → 24-bit / 48 kHz), so the applied format always matches what the app resolved.
+3. **Conservative fallback** — when neither layer can identify the track, the device is set to an honest 24-bit / 44.1 kHz rather than a tier-derived guess: the audio-quality tier only describes your ceiling, not the playing track's real rate, and forcing a guessed high rate would upsample everything that doesn't match it. A toast (when enabled) tells you the rate was undetermined.
 
 When a switch is needed, the app mutes the device the instant the track changes (so nothing is audible at the old format) and applies the new shared-mode format live, under Apple Music's running audio stream. Windows invalidates the stream and Apple Music rebuilds it on its own within a few seconds; once real audio is confirmed, the app unmutes. If playback ever stalls anyway, an escalating recovery (nudge → skip → as a last resort an automatic Apple Music restart) brings it back.
 
@@ -117,6 +117,11 @@ Settings are stored at `%APPDATA%\WindowsLosslessSwitcher\settings.json`. The ca
   // Write verbose per-operation diagnostic entries to the log file.
   // Disable if the log grows too quickly during normal use.
   "enableVerboseDiagnostics": true,
+
+  // Apple Music storefront for catalog lookups, as a two-letter country code (e.g. "gb", "jp").
+  // Leave null to detect it from the Windows region, falling back to "us". Set this if your
+  // Apple Music account's country differs from your Windows region.
+  "appleMusicStorefront": null,
 
   // Last-resort recovery: when playback wedges repeatedly and every lighter recovery fails,
   // restart Apple Music automatically (its play queue may reset — Apple Music cannot restore

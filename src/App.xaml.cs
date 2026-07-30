@@ -58,6 +58,7 @@ public partial class App : Application
         _logger.Info($"OS version: {Environment.OSVersion.Version} ({(Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit")}, {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}).");
 
         _settings = _settingsService.Load();
+        _logger.VerboseEnabled = _settings.EnableVerboseDiagnostics;
         _viewModel.SelectedMode = _settings.DeviceSelectionMode;
         _viewModel.SelectedDeviceId = _settings.PinnedDeviceId;
         _viewModel.LaunchAtLogin = _settings.LaunchAtLogin;
@@ -294,6 +295,7 @@ public partial class App : Application
         _settings.IncludeTrackMetadataInSwitchToasts = _viewModel.IncludeTrackMetadataInSwitchToasts;
         _settings.FormatCacheRefreshDays = _viewModel.FormatCacheRefreshDays;
         _settingsService.Save(_settings);
+        _logger.VerboseEnabled = _settings.EnableVerboseDiagnostics;
         _coordinator?.UpdateSettings(_settings);
         if (e.PropertyName == nameof(MainWindowViewModel.EnableSwitchToasts) && !_settings.EnableSwitchToasts)
         {

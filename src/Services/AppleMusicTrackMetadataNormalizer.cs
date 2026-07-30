@@ -173,10 +173,12 @@ internal static class AppleMusicTrackMetadataNormalizer
                 continue;
             }
 
-            before = value[..index].Trim();
-            after = value[(index + separator.Length)..].Trim();
-            if (!string.IsNullOrWhiteSpace(before) && !string.IsNullOrWhiteSpace(after))
+            var candidateBefore = value[..index].Trim();
+            var candidateAfter = value[(index + separator.Length)..].Trim();
+            if (!string.IsNullOrWhiteSpace(candidateBefore) && !string.IsNullOrWhiteSpace(candidateAfter))
             {
+                before = candidateBefore;
+                after = candidateAfter;
                 return true;
             }
         }

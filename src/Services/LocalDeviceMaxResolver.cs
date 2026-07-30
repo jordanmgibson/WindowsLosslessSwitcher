@@ -161,8 +161,9 @@ public sealed class LocalDeviceMaxResolver : IFormatResolver
     /// Chooses the device rate to target for a file at <paramref name="fileRate"/>. An exact match
     /// wins. Otherwise we never upsample past the source: prefer the highest supported rate the file
     /// rate is an integer multiple of (e.g. 192000 → 96000, 176400 → 88200), keeping the source's
-    /// 44.1- or 48-kHz family; failing that, the highest supported rate below the file rate. Returns
-    /// null when the device supports nothing at or below the file rate.
+    /// 44.1- or 48-kHz family — but only when that submultiple is not itself far below the best the
+    /// device offers; failing that, the highest supported rate below the file rate. Returns null
+    /// when the device supports nothing at or below the file rate.
     /// </summary>
     private static int? SelectTargetRate(IReadOnlyList<AudioFormatCandidate> supported, int fileRate)
     {
@@ -181,7 +182,11 @@ public sealed class LocalDeviceMaxResolver : IFormatResolver
             return null;
         }
 
-        var submultiples = below.Where(rate => fileRate % rate == 0).ToList();
-        return submultiples.Count > 0 ? submultiples.Max() : below.Max();
+        // Accept a clean-family submultiple only within one octave of the best non-divisor rate:
+        // a 176.4 kHz file on a 44.1/48/96 device must land on 96, not divide all the way down to
+        // 44.1 for the sake of an integer ratio.
+        var best = below.Max();
+        var submultiples = below.Where(rate => fileRate % rate == 0 && rate * 2 >= best).ToList();
+        return submultiples.Count > 0 ? submultiples.Max() : best;
     }
 }

@@ -67,23 +67,43 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
     /// otherwise "us". Catalog availability and matching differ by storefront, so guessing "us" for a
     /// non-US listener can return different results (or none) for the track they are actually playing.
     /// </summary>
-    internal static string ResolveStorefront(string? configuredStorefront, DiagnosticsLogger logger)
+    internal static string ResolveStorefront(string? configuredStorefront, DiagnosticsLogger logger) =>
+        ResolveStorefront(configuredStorefront, GetOsRegionCode, logger);
+
+    internal static string ResolveStorefront(
+        string? configuredStorefront,
+        Func<string?> getOsRegionCode,
+        DiagnosticsLogger logger)
     {
         if (!string.IsNullOrWhiteSpace(configuredStorefront))
         {
             var configured = configuredStorefront.Trim().ToLowerInvariant();
-            logger.Info($"Catalog resolver storefront '{configured}' (source: configured override).");
-            return configured;
+            if (IsPlausibleStorefront(configured))
+            {
+                logger.Info($"Catalog resolver storefront '{configured}' (source: configured override).");
+                return configured;
+            }
+
+            logger.Warn(
+                $"Configured storefront '{configuredStorefront}' is not a two-letter country code; " +
+                "falling back to region detection.");
         }
 
         try
         {
-            var region = RegionInfo.CurrentRegion.TwoLetterISORegionName;
+            var region = getOsRegionCode();
             if (!string.IsNullOrWhiteSpace(region))
             {
-                var detected = region.ToLowerInvariant();
-                logger.Info($"Catalog resolver storefront '{detected}' (source: OS region).");
-                return detected;
+                var detected = region.Trim().ToLowerInvariant();
+                if (IsPlausibleStorefront(detected))
+                {
+                    logger.Info($"Catalog resolver storefront '{detected}' (source: OS region).");
+                    return detected;
+                }
+
+                // TwoLetterISORegionName is not always alpha-2: regional formats like es-419
+                // yield UN M.49 numeric codes, and invariant globalization yields "IV".
+                logger.Warn($"OS region '{region}' is not a usable storefront; falling back to 'us'.");
             }
         }
         catch (Exception ex)
@@ -94,6 +114,14 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         logger.Info("Catalog resolver storefront 'us' (source: default).");
         return "us";
     }
+
+    // The storefront is interpolated into request paths, so constrain it to exactly two ASCII
+    // letters — anything else (M.49 numeric codes, invariant-mode "IV" is shaped fine but a path
+    // fragment from a hand-edited settings file is not) must not reach a URL.
+    private static bool IsPlausibleStorefront(string value) =>
+        value.Length == 2 && value.All(char.IsAsciiLetterLower);
+
+    private static string? GetOsRegionCode() => RegionInfo.CurrentRegion.TwoLetterISORegionName;
 
     public string Name => "AppleMusicCatalogResolver";
 
@@ -195,9 +223,15 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             }
         }
 
+        // Every failure below is logged: an unacquirable token disables catalog resolution for all
+        // tracks (they land on the conservative fallback), so it must never fail silently — most
+        // likely cause is a storefront with no music.apple.com presence.
         var browseHtml = await FetchStringAsync($"https://music.apple.com/{_storefront}/browse", null, cancellationToken);
         if (string.IsNullOrWhiteSpace(browseHtml))
         {
+            _logger.Warn(
+                $"Developer token unavailable: the '{_storefront}' storefront browse page did not load; " +
+                "catalog resolution is disabled until it does.");
             return null;
         }
 
@@ -207,6 +241,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         if (!scriptMatch.Success)
         {
+            _logger.Warn($"Developer token unavailable: no bundle script found on the '{_storefront}' browse page.");
             return null;
         }
 
@@ -214,6 +249,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         var scriptContent = await FetchStringAsync(scriptUrl, null, cancellationToken);
         if (string.IsNullOrWhiteSpace(scriptContent))
         {
+            _logger.Warn("Developer token unavailable: the Apple Music bundle script did not load.");
             return null;
         }
 
@@ -222,6 +258,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             @"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+");
         if (!tokenMatch.Success)
         {
+            _logger.Warn("Developer token unavailable: no token found in the Apple Music bundle script.");
             return null;
         }
 
@@ -245,7 +282,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         CancellationToken cancellationToken)
     {
         CatalogSongMatch? bestMatch = null;
-        _logger.Info(
+        _logger.Verbose(
             $"Catalog resolver searching storefront '{_storefront}' for {track.UniqueKey}: " +
             $"title='{track.Title}', artist='{track.Artist}', album='{track.Album}'.");
         foreach (var attempt in BuildSearchAttempts(track))
@@ -262,7 +299,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(json))
             {
-                _logger.Info($"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned no response for {track.UniqueKey}.");
+                _logger.Verbose($"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned no response for {track.UniqueKey}.");
                 continue;
             }
 
@@ -271,7 +308,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
                 !results.TryGetProperty("songs", out var songs) ||
                 !songs.TryGetProperty("data", out var data))
             {
-                _logger.Info($"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned 0 song results for {track.UniqueKey}.");
+                _logger.Verbose($"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned 0 song results for {track.UniqueKey}.");
                 continue;
             }
 
@@ -295,7 +332,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
                 .Take(3)
                 .Select(candidate =>
                     $"\"{candidate.Match.Title}\" / \"{candidate.Match.Artist}\" / \"{candidate.Match.Album}\" (score={candidate.Score})");
-            _logger.Info(
+            _logger.Verbose(
                 $"Catalog resolver query '{attempt.Name}' (term='{attempt.Query}') returned {data.GetArrayLength()} result(s) for {track.UniqueKey}; " +
                 $"top: {(rawCandidates.Count == 0 ? "none" : string.Join("; ", topCandidates))}.");
 
@@ -316,11 +353,11 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
 
             if (bestAttemptMatch is null)
             {
-                _logger.Info($"Catalog resolver query '{attempt.Name}' returned no scored candidates for {track.UniqueKey}.");
+                _logger.Verbose($"Catalog resolver query '{attempt.Name}' returned no scored candidates for {track.UniqueKey}.");
                 continue;
             }
 
-            _logger.Info(
+            _logger.Verbose(
                 $"Catalog resolver query '{attempt.Name}' best candidate for {track.UniqueKey}: " +
                 $"{bestAttemptMatch.Value.Title} / {bestAttemptMatch.Value.Artist} (score={bestAttemptMatch.Value.Score}).");
 

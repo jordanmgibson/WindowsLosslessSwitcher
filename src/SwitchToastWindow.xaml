@@ -43,6 +43,7 @@
                  FontSize="14"
                  FontWeight="SemiBold"
                  Foreground="#FF111827"
+                 TextWrapping="Wrap"
                  Text="Switched audio format" />
 
       <Button Grid.Row="0"
@@ -72,6 +73,7 @@
                  FontSize="20"
                  FontWeight="Bold"
                  Foreground="#FF92400E"
+                 TextWrapping="Wrap"
                  Text="24-bit / 96 kHz" />
 
       <TextBlock x:Name="TrackDetailsTextBlock"

@@ -159,6 +159,24 @@ public sealed class LocalDeviceMaxResolverTests
     }
 
     [Fact]
+    public async Task FileRateAboveDeviceMax_DoesNotDivideFarBelowBestSupportedRate()
+    {
+        // 176.4 kHz file on a 44.1/48/96 Class-1 DAC: 44.1 is the only integer submultiple, but
+        // dividing by four for the sake of a clean ratio would throw away two octaves of
+        // bandwidth the device supports. The family preference only holds within one octave of
+        // the best rate below the file's; here it must land on 96.
+        var endpoint = new StubEndpoint([Rate44_16, new(44100, 24, 2), new(48000, 24, 2), Rate96_24]);
+        var reader = new StubFileFormatReader(new LocalTrackFileFormat(176400, 24, "cache.m4a"));
+        var resolver = CreateResolver(endpoint, reader);
+
+        var result = await resolver.ResolveAsync(CreateTrack(), CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(96000, result!.SampleRateHz);
+        Assert.Equal(24, result.BitDepth);
+    }
+
+    [Fact]
     public async Task FileNotReadable_ReturnsNull()
     {
         var endpoint = new StubEndpoint([Rate44_16, Rate192_24]);

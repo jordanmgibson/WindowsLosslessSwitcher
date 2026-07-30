@@ -346,9 +346,10 @@ public sealed class AppleMusicCatalogResolverTests
     [InlineData("De", "de")]
     public void ResolveStorefront_PrefersConfiguredOverrideTrimmedAndLowercased(string configured, string expected)
     {
-        var logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-
-        var storefront = AppleMusicCatalogResolver.ResolveStorefront(configured, logger);
+        var storefront = AppleMusicCatalogResolver.ResolveStorefront(
+            configured,
+            () => "jp",
+            CreateLogger());
 
         Assert.Equal(expected, storefront);
     }
@@ -357,25 +358,65 @@ public sealed class AppleMusicCatalogResolverTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void ResolveStorefront_FallsBackToANonEmptyLowercaseCodeWhenNoOverride(string? configured)
+    public void ResolveStorefront_UsesOsRegionWhenNoOverride(string? configured)
     {
-        var logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        var storefront = AppleMusicCatalogResolver.ResolveStorefront(
+            configured,
+            () => "JP",
+            CreateLogger());
 
-        var storefront = AppleMusicCatalogResolver.ResolveStorefront(configured, logger);
+        Assert.Equal("jp", storefront);
+    }
 
-        // Detected from OS region, else "us" — either way a non-empty lowercase code.
-        Assert.False(string.IsNullOrWhiteSpace(storefront));
-        Assert.Equal(storefront.ToLowerInvariant(), storefront);
+    [Theory]
+    // The storefront lands in request URLs, so anything that is not two ASCII letters must be
+    // rejected: M.49 numeric region codes, path fragments from a hand-edited settings file.
+    [InlineData("419")]
+    [InlineData("United Kingdom")]
+    [InlineData("us/songs/1?x=")]
+    public void ResolveStorefront_RejectsMalformedOverrideAndFallsBackToRegion(string configured)
+    {
+        var storefront = AppleMusicCatalogResolver.ResolveStorefront(
+            configured,
+            () => "gb",
+            CreateLogger());
+
+        Assert.Equal("gb", storefront);
+    }
+
+    [Theory]
+    [InlineData("419")] // UN M.49 numeric code from a regional format like es-419
+    [InlineData("")]
+    [InlineData(null)]
+    public void ResolveStorefront_DefaultsToUsWhenRegionIsUnusable(string? regionCode)
+    {
+        var storefront = AppleMusicCatalogResolver.ResolveStorefront(
+            configuredStorefront: null,
+            () => regionCode,
+            CreateLogger());
+
+        Assert.Equal("us", storefront);
+    }
+
+    [Fact]
+    public void ResolveStorefront_DefaultsToUsWhenRegionDetectionThrows()
+    {
+        var storefront = AppleMusicCatalogResolver.ResolveStorefront(
+            configuredStorefront: null,
+            () => throw new InvalidOperationException("no region"),
+            CreateLogger());
+
+        Assert.Equal("us", storefront);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static AppleMusicCatalogResolver CreateResolver(
-        Func<HttpRequestMessage, CancellationToken, Task<string?>> sendAsync)
-    {
-        var logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-        return new AppleMusicCatalogResolver(logger, sendAsync, "us");
-    }
+        Func<HttpRequestMessage, CancellationToken, Task<string?>> sendAsync) =>
+        new(CreateLogger(), sendAsync, "us");
+
+    private static DiagnosticsLogger CreateLogger() =>
+        new(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
 
     private static TrackSnapshot CreateTrack(string title, string artist, string album = "Album") =>
         new(
