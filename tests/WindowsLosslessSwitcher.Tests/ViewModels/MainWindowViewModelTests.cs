@@ -8,6 +8,18 @@ namespace WindowsLosslessSwitcher.Tests.ViewModels;
 public sealed class MainWindowViewModelTests
 {
     [Fact]
+    public void ClearFormatCacheCommand_RaisesRequest()
+    {
+        var viewModel = new MainWindowViewModel();
+        var requested = false;
+        viewModel.ClearFormatCacheRequested += () => requested = true;
+
+        viewModel.ClearFormatCacheCommand.Execute(null);
+
+        Assert.True(requested);
+    }
+
+    [Fact]
     public void UpdateAppVersion_RaisesHasUpdatePrimaryActionOncePerRefresh()
     {
         var viewModel = new MainWindowViewModel();

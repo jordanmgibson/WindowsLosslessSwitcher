@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.Json;
 using WindowsLosslessSwitcher.Abstractions;
 using WindowsLosslessSwitcher.Models;
@@ -8,6 +8,8 @@ namespace WindowsLosslessSwitcher.Services;
 public sealed class AppleMusicCatalogResolver : IFormatResolver
 {
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    internal const string DefaultStorefront = "us";
+
     // Number of search results to request per query attempt. 25 gives enough breadth to find
     // live, deluxe, and remaster variants without requesting an excessively large payload.
     private const int SearchResultLimit = 25;
@@ -19,17 +21,19 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
     // match. The catalog runs first and is the authoritative cloud-vs-local test: weaker matches fall
     // through to the device-max resolver, so a local file with merely similar metadata is not treated
     // as the catalog track and instead plays at the device's highest format.
+    // Bump FormatCacheStore.CatalogResolverVersion when this or related matching logic changes.
     private const int MinimumAcceptedScore = 150;
 
     private readonly DiagnosticsLogger _logger;
+    private readonly FormatCacheStore? _formatCacheStore;
     private readonly Func<HttpRequestMessage, CancellationToken, Task<string?>> _sendAsync;
     private readonly string _storefront;
     private readonly object _tokenSync = new();
     private string? _developerToken;
     private DateTimeOffset _developerTokenExpiresAtUtc;
 
-    public AppleMusicCatalogResolver(DiagnosticsLogger logger)
-        : this(logger, SendAsync, "us")
+    public AppleMusicCatalogResolver(DiagnosticsLogger logger, FormatCacheStore? formatCacheStore = null)
+        : this(logger, formatCacheStore, SendAsync, DefaultStorefront)
     {
     }
 
@@ -37,13 +41,30 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         DiagnosticsLogger logger,
         Func<HttpRequestMessage, CancellationToken, Task<string?>> sendAsync,
         string storefront)
+        : this(logger, null, sendAsync, storefront)
     {
+    }
+
+    internal AppleMusicCatalogResolver(
+        DiagnosticsLogger logger,
+        FormatCacheStore? formatCacheStore,
+        Func<HttpRequestMessage, CancellationToken, Task<string?>> sendAsync,
+        string storefront)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storefront);
         _logger = logger;
+        _formatCacheStore = formatCacheStore;
         _sendAsync = sendAsync;
-        _storefront = storefront;
+        _storefront = storefront.Trim().ToLowerInvariant();
     }
 
     public string Name => "AppleMusicCatalogResolver";
+
+    /// <summary>
+    /// True when catalog resolutions are persisted to a format cache store as a side effect.
+    /// FormatCacheVerificationService requires a resolver where this is false.
+    /// </summary>
+    internal bool WritesToCacheStore => _formatCacheStore is not null;
 
     public async Task<ResolvedAudioFormat?> ResolveAsync(TrackSnapshot track, CancellationToken cancellationToken)
     {
@@ -109,7 +130,7 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             $"Catalog resolver matched {songDetail.Id} for {normalizedTrack.UniqueKey}: {bitDepth}/{sampleRateHz} " +
             $"({string.Join(", ", songDetail.AudioTraits)}).");
 
-        return new ResolvedAudioFormat(
+        var resolved = new ResolvedAudioFormat(
             sampleRateHz,
             bitDepth,
             ResolutionConfidence.Exact,
@@ -117,7 +138,13 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             $"Catalog manifest: {bitDepth}/{sampleRateHz / 1000.0:0.###}")
         {
             ObservedAtUtc = DateTimeOffset.UtcNow,
+            CatalogSongId = songDetail.Id,
         };
+
+        // Cache successful lookups immediately so results aren't lost if track processing
+        // is cancelled (e.g., the user skips the track) before it reaches the coordinator.
+        _formatCacheStore?.Store(FormatCacheKey.Create(_storefront, normalizedTrack), resolved);
+        return resolved;
     }
 
     internal async Task<string?> GetDeveloperTokenAsync(CancellationToken cancellationToken)

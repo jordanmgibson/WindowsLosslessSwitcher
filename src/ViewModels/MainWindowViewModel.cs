@@ -21,6 +21,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private int _defaultBitDepth = 24;
     private bool _enableSwitchToasts;
     private bool _includeTrackMetadataInSwitchToasts;
+    private int _formatCacheRefreshDays = 30;
+    private string _formatCacheStatusText = "Cached formats are refreshed automatically as tracks play.";
     private string _resolverStatusText = "Idle";
     private string _currentTrackText = "No track detected";
     private string _requestedFormatText = "-";
@@ -48,6 +50,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         RestoreOriginalFormatCommand = new RelayCommand(
             () => RestoreOriginalFormatRequested?.Invoke(),
             () => CanRestoreOriginalFormat);
+        ClearFormatCacheCommand = new RelayCommand(() => ClearFormatCacheRequested?.Invoke());
         CheckForUpdatesCommand = new RelayCommand(
             () => CheckForUpdatesRequested?.Invoke(),
             () => CanCheckForUpdates);
@@ -73,6 +76,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     public event Action? RestoreOriginalFormatRequested;
 
+    public event Action? ClearFormatCacheRequested;
+
     public ObservableCollection<AudioDeviceInfo> Devices { get; } = [];
 
     public IReadOnlyList<DeviceSelectionModeOption> DeviceModes { get; } =
@@ -82,6 +87,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     ];
 
     public IReadOnlyList<int> DefaultBitDepthOptions { get; } = SupportedDefaultBitDepths;
+
+    public IReadOnlyList<int> FormatCacheRefreshDayOptions { get; } = AppSettings.SupportedFormatCacheRefreshDays;
 
     public RelayCommand RefreshDevicesCommand { get; }
 
@@ -94,6 +101,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public RelayCommand RunUpdatePrimaryActionCommand { get; }
 
     public RelayCommand OpenReleasesPageCommand { get; }
+
+    public RelayCommand ClearFormatCacheCommand { get; }
 
     public DeviceSelectionMode SelectedMode
     {
@@ -166,6 +175,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         get => _includeTrackMetadataInSwitchToasts;
         set => SetField(ref _includeTrackMetadataInSwitchToasts, value);
+    }
+
+    public int FormatCacheRefreshDays
+    {
+        get => _formatCacheRefreshDays;
+        set => SetField(ref _formatCacheRefreshDays, AppSettings.SnapToNearestRefreshDaysPreset(value));
+    }
+
+    public string FormatCacheStatusText
+    {
+        get => _formatCacheStatusText;
+        set => SetField(ref _formatCacheStatusText, value);
     }
 
     public string ResolverStatusText

@@ -11,7 +11,8 @@ App.xaml.cs
  ├─ AppleMusicTrackSource       — watches Apple Music via Windows GSMTC APIs
  ├─ SwitchingCoordinator        — orchestrates the full mute → resolve → live switch → rebuild → restart cycle
  │   ├─ ResolverChain           — runs resolvers in priority order until one succeeds
- │   │   ├─ AppleMusicCatalogResolver   — primary: queries Apple Music catalog for exact format
+ │   │   ├─ FormatCacheResolver         — returns persisted catalog results before network lookup
+ │   │   ├─ AppleMusicCatalogResolver   — queries Apple Music catalog for exact format
  │   │   ├─ LocalDeviceMaxResolver      — local files: reads the true format from the PlayCache file
  │   │   │   └─ PlayCacheTrackFormatReader — locates and reads Apple Music's cached media files
  │   │   └─ TierFallbackResolver        — terminal safety net; never drives a live switch
@@ -37,10 +38,11 @@ Two debounce mechanisms prevent spurious events:
 
 ### 2. Format resolution (`ResolverChain`)
 
-`ResolverChain` iterates resolvers in order, returning the first non-null result. The catalog resolver runs **first** and acts as the authoritative cloud-vs-local test: a confident catalog match (exact title and artist) means the track is an Apple Music catalog track and we use its exact manifest format. When the catalog does not confidently match — local-library files, or any track Apple Music can't identify — the chain falls through to `LocalDeviceMaxResolver`, which reads the actual format from the track's PlayCache file. This avoids a local file that merely shares metadata with a catalog track being forced to the cloud format, because only an exact title+artist match clears the catalog's acceptance threshold.
+`ResolverChain` iterates resolvers in order, returning the first non-null result. `FormatCacheResolver` first checks the versioned, storefront-specific catalog cache. On a miss, the catalog resolver acts as the authoritative cloud-vs-local test: a confident catalog match (exact title and artist) means the track is an Apple Music catalog track and we use its exact manifest format. When the catalog does not confidently match — local-library files, or any track Apple Music can't identify — the chain falls through to `LocalDeviceMaxResolver`, which reads the actual format from the track's PlayCache file. This avoids a local file that merely shares metadata with a catalog track being forced to the cloud format, because only an exact title+artist match clears the catalog's acceptance threshold.
 
 | Resolver | Strategy | Confidence |
 |---|---|---|
+| `FormatCacheResolver` | Returns a cached catalog result immediately. Entries are invalidated when catalog resolver semantics change and stale entries are verified in the background. | `Exact` |
 | `AppleMusicCatalogResolver` | Searches the Apple Music catalog API by track metadata, then fetches the HLS manifest for the best match to read `SAMPLE-RATE` and `BIT-DEPTH` attributes directly. Only a high-confidence match (exact title + exact artist) is accepted; weaker matches return `null` so the track is treated as local. | `Exact` |
 | `LocalDeviceMaxResolver` | Runs after the catalog. Locates the track's file in Apple Music's PlayCache via `PlayCacheTrackFormatReader` (TagLibSharp) and resolves to the file's true sample rate, with the best bit depth the device supports at that rate. Files are matched three ways, in confidence order: the in-progress download folder named after the track, the file Apple Music currently holds OPEN (replays of completed cache files), and a file written right at track start. When no file can be identified, it returns `null` and the chain falls through to the tier fallback — switching beyond the file's own rate gains nothing in shared mode, and the extreme device-max jumps it used to make (e.g. 24/48 → 24/384) destabilized Apple Music's renderer. | `Exact` |
 | `TierFallbackResolver` | Terminal safety net: derives a format from the user's Apple Music audio-quality preference (e.g. High-Res Lossless → 24/48). Applied like any other resolution, so the resolved and applied formats always match; because the fallback is constant, consecutive unidentified tracks are no-op switches. | `Tier` |

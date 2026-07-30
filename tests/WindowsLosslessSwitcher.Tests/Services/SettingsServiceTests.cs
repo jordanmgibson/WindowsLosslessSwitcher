@@ -26,6 +26,7 @@ public sealed class SettingsServiceTests
                 DefaultBitDepth = 16,
                 EnableSwitchToasts = true,
                 IncludeTrackMetadataInSwitchToasts = true,
+                FormatCacheRefreshDays = 60,
                 OriginalTarget = new OriginalTargetSnapshot(
                     "device-1",
                     "USB DAC",
@@ -43,6 +44,7 @@ public sealed class SettingsServiceTests
             Assert.Contains("\"originalTarget\"", json);
             Assert.DoesNotContain("originalTargetDeviceId", json, StringComparison.Ordinal);
             Assert.Equal(settings.OriginalTarget, loaded.OriginalTarget);
+            Assert.Equal(60, loaded.FormatCacheRefreshDays);
         }
         finally
         {
@@ -51,5 +53,22 @@ public sealed class SettingsServiceTests
                 Directory.Delete(settingsDirectory, recursive: true);
             }
         }
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(30, 30)]
+    [InlineData(365, 365)]
+    [InlineData(45, 30)]
+    [InlineData(100, 90)]
+    [InlineData(0, 1)]
+    // Out-of-range values come from hand-edited or corrupt settings files; int.MinValue would
+    // overflow an int distance and invert the snap.
+    [InlineData(-5, 1)]
+    [InlineData(int.MinValue, 1)]
+    [InlineData(int.MaxValue, 365)]
+    public void SnapToNearestRefreshDaysPreset_SnapsUnsupportedValuesToNearestPreset(int input, int expected)
+    {
+        Assert.Equal(expected, AppSettings.SnapToNearestRefreshDaysPreset(input));
     }
 }

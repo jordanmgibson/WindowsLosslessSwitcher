@@ -17,6 +17,7 @@ public enum DeviceSelectionMode
 public sealed class AppSettings
 {
     private int _defaultBitDepth = 24;
+    private int _formatCacheRefreshDays = 30;
 
     public DeviceSelectionMode DeviceSelectionMode { get; set; } = DeviceSelectionMode.FollowDefault;
 
@@ -38,6 +39,17 @@ public sealed class AppSettings
 
     public bool IncludeTrackMetadataInSwitchToasts { get; set; }
 
+    /// <summary>
+    /// Re-checks cached catalog formats in the background after this many days. Must be one of
+    /// <see cref="SupportedFormatCacheRefreshDays"/>; other values snap to the nearest preset.
+    /// The current track keeps playing at the cached format; updates apply on the next playback.
+    /// </summary>
+    public int FormatCacheRefreshDays
+    {
+        get => _formatCacheRefreshDays;
+        set => _formatCacheRefreshDays = SnapToNearestRefreshDaysPreset(value);
+    }
+
     public OriginalTargetSnapshot? OriginalTarget { get; set; }
 
     public bool EnableVerboseDiagnostics { get; set; } = true;
@@ -57,6 +69,32 @@ public sealed class AppSettings
     /// </summary>
     public static int NormalizeBitDepth(int bitDepth) =>
         bitDepth is 16 or 24 ? bitDepth : 24;
+
+    /// <summary>
+    /// Preset refresh intervals exposed in settings. Arbitrary day counts are not supported.
+    /// </summary>
+    public static IReadOnlyList<int> SupportedFormatCacheRefreshDays { get; } =
+        [1, 7, 14, 30, 60, 90, 180, 365];
+
+    public const int DefaultFormatCacheRefreshDays = 30;
+
+    /// <summary>
+    /// Snaps unsupported refresh intervals to the nearest supported preset.
+    /// </summary>
+    public static int SnapToNearestRefreshDaysPreset(int days)
+    {
+        if (SupportedFormatCacheRefreshDays.Contains(days))
+        {
+            return days;
+        }
+
+        // Distance in long: with an int, days near int.MinValue (a corrupt settings file) overflows
+        // Math.Abs and inverts the snap.
+        return SupportedFormatCacheRefreshDays
+            .OrderBy(option => Math.Abs((long)option - days))
+            .ThenBy(option => option)
+            .First();
+    }
 }
 
 /// <summary>

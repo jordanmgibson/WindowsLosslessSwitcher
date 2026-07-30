@@ -3,7 +3,7 @@ using System.Windows.Threading;
 
 namespace WindowsLosslessSwitcher;
 
-public partial class SwitchToastWindow : Window
+public partial class SwitchToastWindow : Window, Services.ISwitchToastWindow
 {
     private readonly DispatcherTimer _closeTimer;
 

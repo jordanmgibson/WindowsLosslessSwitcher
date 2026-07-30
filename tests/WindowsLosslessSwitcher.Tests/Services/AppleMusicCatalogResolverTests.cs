@@ -225,6 +225,88 @@ public sealed class AppleMusicCatalogResolverTests
         Assert.Null(match);
     }
 
+    [Fact]
+    public async Task ResolveAsync_StoresCatalogMatchInCache()
+    {
+        const string manifest =
+            """
+            #EXT-X-MEDIA:TYPE=AUDIO,SAMPLE-RATE=44100,BIT-DEPTH=16
+            """;
+        var expiry = DateTimeOffset.UtcNow.AddHours(6).ToUnixTimeSeconds();
+        var payload = Base64UrlEncode(JsonSerializer.Serialize(new { exp = expiry }));
+        var fakeJwt = $"eyJhbGciOiJFUzI1NiJ9.{payload}.sig";
+        var songDetailResponse = JsonSerializer.Serialize(new
+        {
+            data = new[]
+            {
+                new
+                {
+                    id = "12345",
+                    attributes = new
+                    {
+                        audioTraits = new[] { "lossless" },
+                        extendedAssetUrls = new { enhancedHls = "https://example.com/manifest.m3u8" },
+                    },
+                },
+            },
+        });
+
+        Task<string?> SendAsync(HttpRequestMessage request, CancellationToken _)
+        {
+            var uri = request.RequestUri!;
+            if (uri.AbsolutePath.EndsWith("browse", StringComparison.Ordinal))
+            {
+                return Task.FromResult<string?>("<html><script src=\"/assets/index-abc123.js\"></script></html>");
+            }
+
+            if (uri.Host == "example.com")
+            {
+                return Task.FromResult<string?>(manifest);
+            }
+
+            if (uri.AbsolutePath.Contains("/search", StringComparison.Ordinal))
+            {
+                return Task.FromResult<string?>(BuildSearchResponse("Track", "Artist", "Album"));
+            }
+
+            if (uri.AbsolutePath.Contains("/songs/", StringComparison.Ordinal))
+            {
+                return Task.FromResult<string?>(songDetailResponse);
+            }
+
+            return Task.FromResult<string?>($"var t = '{fakeJwt}';");
+        }
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "WindowsLosslessSwitcher.Tests",
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var store = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            var resolver = new AppleMusicCatalogResolver(logger, store, SendAsync, "us");
+            var track = CreateTrack("Track", "Artist");
+
+            var result = await resolver.ResolveAsync(track, CancellationToken.None);
+
+            Assert.NotNull(result);
+            Assert.True(store.TryGet(FormatCacheKey.Create("us", track), out var entry));
+            Assert.NotNull(entry);
+            Assert.Equal("12345", entry.CatalogSongId);
+            Assert.Equal(44100, entry.SampleRateHz);
+            Assert.Equal(16, entry.BitDepth);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static AppleMusicCatalogResolver CreateResolver(
