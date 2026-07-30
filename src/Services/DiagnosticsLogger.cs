@@ -14,6 +14,7 @@ public sealed class DiagnosticsLogger
     private readonly ConcurrentQueue<string> _recentEntries = new();
     private readonly object _fileLock = new();
     private readonly Mutex _writeMutex;
+    private volatile bool _verboseEnabled = true;
 
     public DiagnosticsLogger()
         : this(null)
@@ -34,9 +35,39 @@ public sealed class DiagnosticsLogger
 
     public string LogPath => _logPath;
 
+    /// <summary>
+    /// Gates <see cref="Verbose(string)"/> output. Mirrors AppSettings.EnableVerboseDiagnostics;
+    /// the app updates it at startup and whenever settings are saved.
+    /// </summary>
+    public bool VerboseEnabled
+    {
+        get => _verboseEnabled;
+        set => _verboseEnabled = value;
+    }
+
     public void Info(string message) => Write("INFO", message);
 
     internal void Info(string message, LogCorrelation correlation) => Write("INFO", message, correlation);
+
+    /// <summary>
+    /// Per-operation diagnostic detail (search attempts, playback probes). Suppressed when
+    /// <see cref="VerboseEnabled"/> is off so the log stays readable during normal use.
+    /// </summary>
+    public void Verbose(string message)
+    {
+        if (_verboseEnabled)
+        {
+            Write("INFO", message);
+        }
+    }
+
+    internal void Verbose(string message, LogCorrelation correlation)
+    {
+        if (_verboseEnabled)
+        {
+            Write("INFO", message, correlation);
+        }
+    }
 
     public void Warn(string message) => Write("WARN", message);
 

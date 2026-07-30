@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Tracks no resolver can identify now fall back to a conservative
+  24-bit / 44.1 kHz instead of a format guessed from the Apple Music
+  audio-quality tier (previously Hi-Res Lossless → 24/192, Lossless → 24/48).
+  The tier only describes the account's ceiling, not the playing track's real
+  rate; the old guess upsampled redbook tracks and misreported the rate as
+  resolved. A toast (when enabled) now says the rate was undetermined.
+- Catalog lookups use the Apple Music storefront matching the Windows region
+  (previously always "us"), overridable with the new `appleMusicStorefront`
+  setting. Invalid or unusable region codes fall back to "us".
+- Catalog matching considers per-track performer credits and album-part
+  metadata, improving matches for compilations and multi-artist albums.
+- Local ALAC files are resolved to their true bit depth read from the ALAC
+  magic cookie (the container's legacy field frequently claims 16-bit for
+  24-bit Hi-Res files), and lossy local files apply the lowest supported
+  device depth instead of inflating to the device maximum.
+- Verbose per-operation diagnostics (catalog search attempts, playback
+  probes) are now actually gated by `enableVerboseDiagnostics`; the setting
+  previously had no effect.
+
 ## [1.0.0-beta.1] - 2026-06-11
 
 ### Changed
