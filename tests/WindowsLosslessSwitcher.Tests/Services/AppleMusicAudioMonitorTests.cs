@@ -198,6 +198,66 @@ public sealed class AppleMusicAudioMonitorTests : IDisposable
     }
 
     [Fact]
+    public void KeepAlive_LeaseRelease_KeepsSessionAlive()
+    {
+        var factory = new FakeFactory();
+        using var monitor = new AppleMusicAudioMonitor(
+            _logger, new FakeTransport(), factory, () => 1, keepSessionForProcessLifetime: true);
+
+        var lease = monitor.AcquireVisibleLease();
+        Assert.Single(factory.Sessions);
+        lease.Dispose();
+
+        // Windows 10 mode: tearing down would burn the PID, so the session drains on.
+        Assert.False(factory.Sessions[0].Disposed);
+
+        using var second = monitor.AcquireVisibleLease();
+        Assert.Single(factory.Sessions);
+    }
+
+    [Fact]
+    public void KeepAlive_StreamFailure_WaitsForAgentRespawn()
+    {
+        var factory = new FakeFactory();
+        var pid = 100;
+        using var monitor = new AppleMusicAudioMonitor(
+            _logger, new FakeTransport(), factory, () => pid, keepSessionForProcessLifetime: true);
+
+        using var lease = monitor.AcquireVisibleLease();
+        Assert.Equal(100, factory.Sessions[0].TargetPid);
+
+        factory.Sessions[0].OnStreamFailed!(new InvalidOperationException("stream died"));
+
+        // The dead session's PID is burnt: the 250 ms retry must NOT recreate for it.
+        Thread.Sleep(1200);
+        Assert.Single(factory.Sessions);
+
+        // Agent respawn under a new PID resumes capture on the next PID poll (≤ 5 s).
+        pid = 200;
+        Assert.True(WaitUntil(() => factory.Sessions.Count == 2, 7000), "expected capture for the respawned PID");
+        Assert.Equal(200, factory.Sessions[1].TargetPid);
+    }
+
+    [Fact]
+    public void KeepAlive_WatchdogSilence_DoesNotRecycleUnchangedPid()
+    {
+        var factory = new FakeFactory();
+        using var monitor = new AppleMusicAudioMonitor(
+            _logger, new FakeTransport { Status = MediaTransportPlaybackStatus.Playing },
+            factory, () => 1, keepSessionForProcessLifetime: true);
+
+        using var lease = monitor.AcquireVisibleLease();
+        Assert.Single(factory.Sessions);
+
+        // Playing + a fake that never produces samples = permanent "silence": past the 3 s
+        // watchdog threshold this would recycle on Windows 11, but with an unchanged PID the
+        // Windows 10 path must leave the one usable stream alone.
+        Thread.Sleep(5000);
+        Assert.Single(factory.Sessions);
+        Assert.False(factory.Sessions[0].Disposed);
+    }
+
+    [Fact]
     public void PlaybackPausedLongEnough_StopsCapture_ResumeRestarts()
     {
         var factory = new FakeFactory();

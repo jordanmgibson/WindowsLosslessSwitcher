@@ -10,13 +10,23 @@ namespace WindowsLosslessSwitcher.Services;
 /// <c>AMPLibraryAgent</c> process tree (the process that actually renders Apple Music audio —
 /// same ground truth the switching coordinator uses) feeding a <see cref="SpectrumAnalyzer"/>.
 ///
-/// Lifecycle: capture runs only while at least one visible spectrograph holds a lease AND
-/// playback isn't idle. Every device format switch invalidates the stream — restarts are the
-/// steady state, driven by exponential backoff with per-restart PID re-resolution (the recovery
-/// ladder can respawn the agent under a new PID). A watchdog restarts capture when audio is
-/// reported playing but the capture stays silent (PID reuse, process-topology change). Three
-/// consecutive non-routine failures latch the monitor faulted for this visibility session and
-/// the UI falls back to the static glyph.
+/// Lifecycle on Windows 11: capture runs only while at least one visible spectrograph holds a
+/// lease AND playback isn't idle. Every device format switch invalidates the stream — restarts
+/// are the steady state, driven by exponential backoff with per-restart PID re-resolution (the
+/// recovery ladder can respawn the agent under a new PID). A watchdog restarts capture when
+/// audio is reported playing but the capture stays silent (PID reuse, process-topology change).
+/// Three consecutive non-routine failures latch the monitor faulted for this visibility session
+/// and the UI falls back to the static glyph.
+///
+/// Lifecycle on Windows 10 (build &lt; 22000): the audio engine allows each client process
+/// exactly ONE successful process-loopback <c>Initialize</c> per target PID — every later
+/// attempt for the same PID fails with E_UNEXPECTED for the client process's lifetime, no
+/// matter how long it waits (VM-probed on 19045: locked after 35 s idle and 60 retries, while
+/// fresh processes and other target PIDs succeed instantly). The stream itself is durable there
+/// (format switches do NOT invalidate it, unlike Windows 11), so the session is kept for the
+/// app's lifetime instead: lease releases and playback idling leave it draining, the silence
+/// watchdog only recycles when the resolved PID actually changed, and once a PID's stream dies
+/// its PID is burnt — capture resumes only when the agent respawns under a new PID.
 /// </summary>
 public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
 {
@@ -33,9 +43,12 @@ public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
     private readonly IMediaTransportController _transport;
     private readonly ISpectrographCaptureFactory _captureFactory;
     private readonly Func<int?> _pidResolver;
+    private readonly bool _keepSessionForProcessLifetime;
+    private readonly HashSet<int> _burntPids = [];
     private readonly SpectrumAnalyzer _analyzer = new();
     private readonly object _sync = new();
 
+    private int _sessionPid;
     private int _leaseCount;
     private ISpectrographCaptureSession? _session;
     private Timer? _retryTimer;
@@ -54,7 +67,12 @@ public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
     public AppleMusicAudioMonitor(
         DiagnosticsLogger logger,
         IMediaTransportController transport)
-        : this(logger, transport, new ProcessLoopbackCaptureFactory(), ResolveAppleMusicAudioPid)
+        : this(
+            logger,
+            transport,
+            new ProcessLoopbackCaptureFactory(),
+            ResolveAppleMusicAudioPid,
+            keepSessionForProcessLifetime: Environment.OSVersion.Version.Build < 22000)
     {
     }
 
@@ -62,12 +80,14 @@ public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
         DiagnosticsLogger logger,
         IMediaTransportController transport,
         ISpectrographCaptureFactory captureFactory,
-        Func<int?> pidResolver)
+        Func<int?> pidResolver,
+        bool keepSessionForProcessLifetime = false)
     {
         _logger = logger;
         _transport = transport;
         _captureFactory = captureFactory;
         _pidResolver = pidResolver;
+        _keepSessionForProcessLifetime = keepSessionForProcessLifetime;
     }
 
     public float[] CurrentBars => _analyzer.LatestBars;
@@ -110,10 +130,15 @@ public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
 
             if (--_leaseCount == 0)
             {
-                StopCaptureLocked();
                 _pollTimer?.Change(Timeout.Infinite, Timeout.Infinite);
                 _retryTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-                _analyzer.Reset();
+                if (!_keepSessionForProcessLifetime)
+                {
+                    // Analyzer reset must not race the capture thread, so it only happens when
+                    // the session is actually torn down.
+                    StopCaptureLocked();
+                    _analyzer.Reset();
+                }
             }
         }
     }
@@ -132,11 +157,20 @@ public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
             return;
         }
 
+        if (_keepSessionForProcessLifetime && _burntPids.Contains(pid.Value))
+        {
+            // This process already spent its one Windows 10 loopback stream for that PID;
+            // keep polling until the agent respawns under a fresh one.
+            ScheduleRetryLocked(PidRetryInterval);
+            return;
+        }
+
         try
         {
             var session = _captureFactory.Create(pid.Value, _analyzer.ProcessSamples, OnStreamFailed);
             session.Start();
             _session = session;
+            _sessionPid = pid.Value;
             _sessionStartedAt = DateTimeOffset.UtcNow;
             _capturing = true;
             _logger.Verbose($"Spectrograph capture started for PID {pid.Value}.");
@@ -152,6 +186,11 @@ public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
         _capturing = false;
         var session = _session;
         _session = null;
+        if (session is not null && _keepSessionForProcessLifetime)
+        {
+            _burntPids.Add(_sessionPid);
+        }
+
         session?.Dispose();
     }
 
@@ -250,19 +289,31 @@ public sealed class AppleMusicAudioMonitor : ISpectrumSource, IDisposable
                     now - _sessionStartedAt > WatchdogSilence &&
                     now - _lastWatchdogRestartAt > WatchdogCooldown)
                 {
-                    _lastWatchdogRestartAt = now;
-                    _logger.Verbose("Spectrograph watchdog: playback reported but capture silent; restarting capture.");
-                    StopCaptureLocked();
-                    EnsureCaptureStartedLocked();
+                    if (_keepSessionForProcessLifetime && (_pidResolver() ?? _sessionPid) == _sessionPid)
+                    {
+                        // Closing the stream would burn this PID for good on Windows 10, and
+                        // silence with an unchanged PID is routine there (the app mutes the
+                        // device around its own switches). Only a genuine respawn recycles.
+                        _lastWatchdogRestartAt = now;
+                    }
+                    else
+                    {
+                        _lastWatchdogRestartAt = now;
+                        _logger.Verbose("Spectrograph watchdog: playback reported but capture silent; restarting capture.");
+                        StopCaptureLocked();
+                        EnsureCaptureStartedLocked();
+                    }
                 }
             }
-            else if (!_playbackIdle &&
+            else if (!_keepSessionForProcessLifetime &&
+                     !_playbackIdle &&
                      _session is not null &&
                      _lastPlayingAt != DateTimeOffset.MinValue &&
                      now - _lastPlayingAt > PlaybackIdleThreshold)
             {
                 // Paused for a while with the window open: stop capture, keep leases; the next
-                // Playing poll restarts instantly.
+                // Playing poll restarts instantly. (On Windows 10 the session must survive —
+                // see the class doc — so idling never stops it there.)
                 _playbackIdle = true;
                 _logger.Verbose("Spectrograph capture paused (playback idle).");
                 StopCaptureLocked();

@@ -20,7 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capture is scoped to the Apple media agent's process tree via WASAPI
   process-loopback, so audio from other apps never moves the bars. Capture
   runs only while a window showing it is visible, pauses when playback is
-  idle, and restarts itself after every device format switch.
+  idle, and restarts itself after every device format switch. On Windows 10
+  the audio engine only allows one process-loopback stream per target process
+  for the app's lifetime (later attempts fail permanently), so there the
+  capture session is kept alive across window hide/show and playback idling,
+  and is only re-created when Apple Music's media agent restarts under a new
+  process id.
 - The switch popup was redesigned and now follows the notification settings:
   with "Include song, artist, and album" on it is a rich card with artwork
   and the old→new format transition; with it off, a minimal pill with just
