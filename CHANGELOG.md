@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   straight to the local-file resolver; the search re-runs after 30 days in
   case the track was since added to Apple Music. Transient network or token
   failures are never cached.
+- The playback-recovery ladder now distinguishes tracks Apple Music itself
+  cannot play (the renderer never starts, so no format switch is applied)
+  from switch-induced renderer damage. When a format switch is skipped
+  because the render stream never became active, the device is unmuted
+  immediately instead of staying silent through the ~20 s recovery window;
+  stalls with no applied switch escalate to skip-next only and no longer
+  count toward the automatic Apple Music restart threshold; and consecutive
+  no-switch stalls relax the skip cooldown so a cluster of unplayable
+  tracks is skipped through quickly instead of stranding the queue.
 
 ## [1.0.0-beta.7] - 2026-07-30
 
