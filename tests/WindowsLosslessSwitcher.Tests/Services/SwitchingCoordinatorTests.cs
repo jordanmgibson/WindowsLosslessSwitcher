@@ -533,16 +533,47 @@ public sealed class SwitchingCoordinatorTests
     }
 
     [Fact]
-    public async Task RecoverySkipEscalation_FiresOnceThenHonorsCooldown()
+    public async Task RecoverySkipEscalation_AfterAppliedSwitch_FiresOnceThenHonorsCooldown()
     {
-        // Two hard-wedged tracks in a row: the first failed recovery escalates to a skip-next;
-        // the second, inside the cooldown window, must NOT skip again (no runaway skipping).
+        // Two tracks in a row wedged BY an applied switch: the first failed recovery escalates
+        // to a skip-next; the second, inside the full cooldown window, must NOT skip again —
+        // the wedge is renderer damage, and skipping just moves it forward through the queue.
+        var trackSource = new TestTrackSource();
+        var mediaTransportController = new TestMediaTransportController();
+        var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            MasterPeakValue = 0f, // the switch invalidates the stream and audio never returns
+        };
+        var resolver = CreateAlternatingFormatResolver();
+        await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
+        var firstFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
+
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+
+        trackSource.RaiseTrackChanged(CreateTrack());
+        await firstFailure.WaitAsync(RecoveryTimeout);
+        Assert.Equal(1, mediaTransportController.SkipNextCallCount);
+
+        var secondFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
+        trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
+        await secondFailure.WaitAsync(RecoveryTimeout);
+
+        Assert.Equal(1, mediaTransportController.SkipNextCallCount); // cooldown blocked a second skip
+    }
+
+    [Fact]
+    public async Task ConsecutiveNoSwitchStalls_RelaxSkipCooldownAndSkipThrough()
+    {
+        // A cluster of tracks Apple Music itself cannot play (renderer never starts, no switch
+        // applied): each stall already costs ~15 s of detection, so holding the full skip
+        // cooldown between them would strand the queue in silence. Consecutive no-switch
+        // stalls relax the cooldown and the cluster is skipped through quickly.
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController();
         var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
         {
             MasterPeakValue = 0f,
-            RenderSessionActiveProvider = () => false, // renderer never comes up
+            RenderSessionActiveProvider = () => false, // renderer never comes up on any track
         };
         var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(CurrentFormat)));
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
@@ -558,24 +589,23 @@ public sealed class SwitchingCoordinatorTests
         trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
         await secondFailure.WaitAsync(RecoveryTimeout);
 
-        Assert.Equal(1, mediaTransportController.SkipNextCallCount); // cooldown blocked a second skip
+        Assert.Equal(2, mediaTransportController.SkipNextCallCount); // relaxed cooldown let the cluster move on
     }
 
     [Fact]
-    public async Task CascadeOfRecoveryFailures_RestartsAppleMusic_AndRecovers()
+    public async Task CascadeOfRecoveryFailures_AfterAppliedSwitches_RestartsAppleMusic_AndRecovers()
     {
-        // Three failed recoveries in a short window = the degraded-renderer cascade, where nudges
-        // never work and skipping just moves the wedge forward. The coordinator must restart
-        // Apple Music (the only known cure), confirm audio, and reset its cascade tracking.
+        // Three failed recoveries in a short window, each on a track whose SWITCH wedged the
+        // renderer = the degraded-renderer cascade, where nudges never work and skipping just
+        // moves the wedge forward. The coordinator must restart Apple Music (the only known
+        // cure), confirm audio, and reset its cascade tracking.
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController();
         var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
         {
-            MasterPeakValue = 0f,
+            MasterPeakValue = 0f, // every applied switch kills the stream's audio for good
         };
-        var sessionAlive = false;
         var reviveOnNextPlay = false;
-        audioEndpointController.RenderSessionActiveProvider = () => sessionAlive;
         var processController = new TestAppleMusicProcessController
         {
             RestartInvoked = () => reviveOnNextPlay = true, // a fresh Apple Music renders again
@@ -585,40 +615,37 @@ public sealed class SwitchingCoordinatorTests
             if (reviveOnNextPlay)
             {
                 reviveOnNextPlay = false;
-                sessionAlive = true;
                 audioEndpointController.MasterPeakValue = 0.01f;
             }
         };
-        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(CurrentFormat)));
+        var resolver = CreateAlternatingFormatResolver();
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver, processController);
-        var firstFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
+        var firstFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
 
         await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
 
-        // Wedge 1: nudge fails -> failure #1 -> below the cascade threshold -> skip-next.
+        // Wedge 1: nudges fail -> failure #1 -> below the cascade threshold -> skip-next.
         trackSource.RaiseTrackChanged(CreateTrack());
         await firstFailure.WaitAsync(RecoveryTimeout);
         Assert.Equal(0, processController.RestartCallCount);
         Assert.Equal(1, mediaTransportController.SkipNextCallCount);
 
         // Wedge 2: failure #2 — still below the threshold; the skip cooldown blocks another skip.
-        var secondFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
+        var secondFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
         trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
         await secondFailure.WaitAsync(RecoveryTimeout);
         Assert.Equal(0, processController.RestartCallCount);
 
         // Wedge 3: failure #3 within the window -> cascade -> restart -> playback recovers.
-        var recovered = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("was recovered automatically") == true);
+        var recovered = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("was restarted to recover playback") == true);
         trackSource.RaiseTrackChanged(CreateTrack("Third Track"));
         await recovered.WaitAsync(RecoveryTimeout);
         Assert.Equal(1, processController.RestartCallCount);
-        Assert.True(sessionAlive);
 
         // Wedge 4: the restart cleared the cascade state and its cooldown is active, so this
         // failure is #1 again -> no second restart.
-        sessionAlive = false;
         audioEndpointController.MasterPeakValue = 0f;
-        var fourthFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
+        var fourthFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
         trackSource.RaiseTrackChanged(CreateTrack("Fourth Track"));
         await fourthFailure.WaitAsync(RecoveryTimeout);
         Assert.Equal(1, processController.RestartCallCount);
@@ -631,13 +658,12 @@ public sealed class SwitchingCoordinatorTests
         var mediaTransportController = new TestMediaTransportController();
         var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
         {
-            MasterPeakValue = 0f,
-            RenderSessionActiveProvider = () => false, // permanent wedge
+            MasterPeakValue = 0f, // every applied switch wedges the renderer for good
         };
         var processController = new TestAppleMusicProcessController();
-        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(CurrentFormat)));
+        var resolver = CreateAlternatingFormatResolver();
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver, processController);
-        var firstFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
+        var firstFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
 
         var settings = CreateSettings();
         settings.RestartAppleMusicOnPlaybackFailure = false;
@@ -646,11 +672,11 @@ public sealed class SwitchingCoordinatorTests
         trackSource.RaiseTrackChanged(CreateTrack());
         await firstFailure.WaitAsync(RecoveryTimeout);
 
-        var secondFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
+        var secondFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
         trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
         await secondFailure.WaitAsync(RecoveryTimeout);
 
-        var thirdFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
+        var thirdFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
         trackSource.RaiseTrackChanged(CreateTrack("Third Track"));
         await thirdFailure.WaitAsync(RecoveryTimeout);
 
@@ -665,15 +691,51 @@ public sealed class SwitchingCoordinatorTests
         var mediaTransportController = new TestMediaTransportController();
         var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
         {
-            MasterPeakValue = 0f,
-            RenderSessionActiveProvider = () => false, // permanent wedge
+            MasterPeakValue = 0f, // every applied switch wedges the renderer for good
         };
         var processController = new TestAppleMusicProcessController { RestartResult = false };
+        var resolver = CreateAlternatingFormatResolver();
+        await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver, processController);
+        var firstFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
+
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+
+        trackSource.RaiseTrackChanged(CreateTrack());
+        await firstFailure.WaitAsync(RecoveryTimeout);
+
+        var secondFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
+        trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
+        await secondFailure.WaitAsync(RecoveryTimeout);
+
+        var skipsBeforeRestart = mediaTransportController.SkipNextCallCount;
+        var thirdFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not confirm audio") == true);
+        trackSource.RaiseTrackChanged(CreateTrack("Third Track"));
+        await thirdFailure.WaitAsync(RecoveryTimeout);
+
+        Assert.Equal(1, processController.RestartCallCount); // restart attempted on the third failure
+        Assert.Equal(skipsBeforeRestart, mediaTransportController.SkipNextCallCount); // no skip stacked on the failed restart
+    }
+
+    [Fact]
+    public async Task NoSwitchStalls_EscalateToSkipOnly_NeverAppleMusicRestart()
+    {
+        // Three consecutive stalls WITHOUT an applied switch — tracks Apple Music itself cannot
+        // play (2026-07-31 incident: bad local files whose renderer never starts). These are not
+        // switch-induced renderer damage, so even with the restart escalation enabled they must
+        // never count toward the cascade threshold; each one skips forward instead.
+        var trackSource = new TestTrackSource();
+        var mediaTransportController = new TestMediaTransportController();
+        var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            MasterPeakValue = 0f,
+            RenderSessionActiveProvider = () => false, // the renderer never starts on any track
+        };
+        var processController = new TestAppleMusicProcessController();
         var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(CurrentFormat)));
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver, processController);
         var firstFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
 
-        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None); // restart escalation enabled
 
         trackSource.RaiseTrackChanged(CreateTrack());
         await firstFailure.WaitAsync(RecoveryTimeout);
@@ -682,13 +744,55 @@ public sealed class SwitchingCoordinatorTests
         trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
         await secondFailure.WaitAsync(RecoveryTimeout);
 
-        var skipsBeforeRestart = mediaTransportController.SkipNextCallCount;
         var thirdFailure = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("could not be recovered") == true);
         trackSource.RaiseTrackChanged(CreateTrack("Third Track"));
         await thirdFailure.WaitAsync(RecoveryTimeout);
 
-        Assert.Equal(1, processController.RestartCallCount); // restart attempted on the third failure
-        Assert.Equal(skipsBeforeRestart, mediaTransportController.SkipNextCallCount); // no skip stacked on the failed restart
+        Assert.Equal(0, processController.RestartCallCount); // three failures, but none switch-induced
+        Assert.Equal(3, mediaTransportController.SkipNextCallCount); // every dead track skipped through
+    }
+
+    [Fact]
+    public async Task SkippedSwitch_WhenRenderStreamNeverActivates_UnmutesImmediatelyNotAfterRecovery()
+    {
+        // A track Apple Music itself cannot play: the renderer never starts, so the gate skips
+        // the format switch and recovery runs. The track-change mute must be released the moment
+        // the switch is skipped — holding it through the ~20 s health-check + recovery window
+        // would enforce silence even if the track's stream eventually came up.
+        var trackSource = new TestTrackSource();
+        var mediaTransportController = new TestMediaTransportController();
+        var streamAlive = true;
+        var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            MasterPeakValue = 0.01f,
+        };
+        audioEndpointController.RenderSessionActiveProvider = () => streamAlive && mediaTransportController.IsPlaying;
+        var resolver = CreateAlternatingFormatResolver();
+        await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
+        var firstRestored = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
+
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+
+        // First track switches cleanly so the coordinator caches the target device — the
+        // instant mute only arms from the second track change on.
+        trackSource.RaiseTrackChanged(CreateTrack());
+        await firstRestored.WaitAsync(DefaultTimeout);
+        Assert.Empty(audioEndpointController.MuteCalls);
+
+        // Second track: the renderer never starts, so its switch is skipped.
+        streamAlive = false;
+        audioEndpointController.MasterPeakValue = 0f;
+        bool? mutedWhenRecoveryPaused = null;
+        mediaTransportController.PauseInvoked = () => mutedWhenRecoveryPaused ??= audioEndpointController.MasterMute;
+        var skipStatus = WaitForStatusAsync(coordinator, status => status.FailureReason?.Contains("Render stream not active") == true);
+        trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
+        await skipStatus.WaitAsync(RecoveryTimeout);
+
+        // Muted on the track change, unmuted at the skip decision — and already unmuted by the
+        // time the recovery nudge paused, not only when processing ended.
+        Assert.Equal([true, false], audioEndpointController.MuteCalls);
+        Assert.False(audioEndpointController.MasterMute);
+        Assert.Equal(false, mutedWhenRecoveryPaused);
     }
 
     [Fact]
@@ -1054,6 +1158,15 @@ public sealed class SwitchingCoordinatorTests
                     originalTargetFormat.Channels,
                     DateTimeOffset.UtcNow),
         };
+
+    // Alternates the resolved format on each call so every consecutive track differs from the
+    // device format left by the previous apply — i.e. every track attempts a real switch.
+    private static DelegateResolver CreateAlternatingFormatResolver()
+    {
+        var resolveCount = 0;
+        return new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(
+            CreateResolvedFormat(resolveCount++ % 2 == 0 ? LosslessFormat : CurrentFormat)));
+    }
 
     private static TrackSnapshot CreateTrack(string title = "Track") =>
         new(

@@ -226,6 +226,125 @@ public sealed class AppleMusicCatalogResolverTests
     }
 
     [Fact]
+    public async Task ResolveAsync_NoCatalogMatch_CachesNegativeAndSkipsSearchOnReplay()
+    {
+        var expiry = DateTimeOffset.UtcNow.AddHours(6).ToUnixTimeSeconds();
+        var payload = Base64UrlEncode(JsonSerializer.Serialize(new { exp = expiry }));
+        var fakeJwt = $"eyJhbGciOiJFUzI1NiJ9.{payload}.sig";
+        var requests = 0;
+
+        Task<string?> SendAsync(HttpRequestMessage request, CancellationToken _)
+        {
+            Interlocked.Increment(ref requests);
+            var uri = request.RequestUri!;
+            if (uri.AbsolutePath.EndsWith("browse", StringComparison.Ordinal))
+            {
+                return Task.FromResult<string?>("<html><script src=\"/assets/index-abc123.js\"></script></html>");
+            }
+
+            if (uri.AbsolutePath.Contains("/search", StringComparison.Ordinal))
+            {
+                // A live catalog response that simply has nothing acceptable for this track.
+                return Task.FromResult<string?>(BuildSearchResponse("Unrelated Song", "Unrelated Artist", "Unrelated Album"));
+            }
+
+            return Task.FromResult<string?>($"var t = '{fakeJwt}';");
+        }
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "WindowsLosslessSwitcher.Tests",
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var store = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            var resolver = new AppleMusicCatalogResolver(logger, store, SendAsync, "us");
+            var track = CreateTrack("Local Leak", "Some Artist");
+
+            // First play: full lookup, no match, negative cached.
+            Assert.Null(await resolver.ResolveAsync(track, CancellationToken.None));
+            Assert.True(store.TryGet(FormatCacheKey.Create("us", track), out var entry));
+            Assert.NotNull(entry);
+            Assert.True(entry.NoMatch);
+
+            // Replay: not a single network request.
+            var requestsAfterFirst = requests;
+            Assert.Null(await resolver.ResolveAsync(track, CancellationToken.None));
+            Assert.Equal(requestsAfterFirst, requests);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ExpiredNoMatch_SearchesAgain()
+    {
+        var expiry = DateTimeOffset.UtcNow.AddHours(6).ToUnixTimeSeconds();
+        var payload = Base64UrlEncode(JsonSerializer.Serialize(new { exp = expiry }));
+        var fakeJwt = $"eyJhbGciOiJFUzI1NiJ9.{payload}.sig";
+        var searches = 0;
+
+        Task<string?> SendAsync(HttpRequestMessage request, CancellationToken _)
+        {
+            var uri = request.RequestUri!;
+            if (uri.AbsolutePath.EndsWith("browse", StringComparison.Ordinal))
+            {
+                return Task.FromResult<string?>("<html><script src=\"/assets/index-abc123.js\"></script></html>");
+            }
+
+            if (uri.AbsolutePath.Contains("/search", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref searches);
+                return Task.FromResult<string?>(BuildSearchResponse("Unrelated Song", "Unrelated Artist", "Unrelated Album"));
+            }
+
+            return Task.FromResult<string?>($"var t = '{fakeJwt}';");
+        }
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "WindowsLosslessSwitcher.Tests",
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var logger = new DiagnosticsLogger(directory);
+            var store = new FormatCacheStore(Path.Combine(directory, "format-cache.json"), logger);
+            var resolver = new AppleMusicCatalogResolver(logger, store, SendAsync, "us");
+            var track = CreateTrack("Local Leak", "Some Artist");
+            // An old no-match entry, past the retry window.
+            Assert.True(store.StoreNoMatch(
+                FormatCacheKey.Create("us", track),
+                DateTimeOffset.UtcNow - AppleMusicCatalogResolver.NoMatchRetryInterval - TimeSpan.FromDays(1)));
+
+            Assert.Null(await resolver.ResolveAsync(track, CancellationToken.None));
+
+            // The expired entry no longer suppresses the lookup (a lookup runs up to three
+            // search attempts).
+            Assert.InRange(searches, 1, 3);
+            // The entry is refreshed, so the next replay skips again.
+            Assert.True(store.TryGet(FormatCacheKey.Create("us", track), out var entry));
+            Assert.NotNull(entry);
+            Assert.True(entry.NoMatch);
+            Assert.True(entry.LastVerifiedAtUtc > DateTimeOffset.UtcNow.AddMinutes(-1));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ResolveAsync_StoresCatalogMatchInCache()
     {
         const string manifest =

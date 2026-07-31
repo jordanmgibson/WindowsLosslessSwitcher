@@ -100,6 +100,14 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     // can never runaway-skip through a playlist if Apple Music stays wedged.
     private static readonly TimeSpan RecoverySkipCooldown = TimeSpan.FromSeconds(30);
 
+    // Relaxed skip cooldown once CONSECUTIVE tracks stall without an applied switch. That
+    // pattern is not renderer damage — it is a run of tracks Apple Music itself cannot play
+    // (bad local files: renderer never starts), and each one already costs ~15-20 s of stall
+    // detection before its skip can fire, so detection latency alone bounds the skip rate.
+    // The full cooldown would strand the queue in silence between dead tracks; this floor
+    // only guards against back-to-back command bursts.
+    private static readonly TimeSpan ConsecutiveNoSwitchStallSkipCooldown = TimeSpan.FromSeconds(5);
+
     // The continuous watchdog samples playback at this interval whenever no track is being
     // processed. The per-path health checks only run at track-processing time, but a wedge can
     // strike at ANY moment (proven live: a track passed its processing-time check, then died
@@ -184,6 +192,18 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
     // Last time recovery escalated to a skip-next, enforcing RecoverySkipCooldown.
     private DateTimeOffset _lastRecoverySkipUtc = DateTimeOffset.MinValue;
+
+    // True when the last recovery skip was for a stall with no applied switch. Consecutive
+    // no-switch stalls (a cluster of tracks Apple Music cannot play) relax the skip cooldown
+    // so the queue moves through the cluster quickly. Cleared when a recovery succeeds or a
+    // switch-applied recovery skips. Only touched while holding _switchLock.
+    private bool _lastRecoverySkipWasNoSwitchStall;
+
+    // Whether a format switch has been applied since the current track began (track
+    // processing or a manual original-format restore). Scopes recovery escalation: stalls
+    // after an applied switch count toward the Apple Music restart threshold (switch-induced
+    // renderer damage); stalls without one only ever skip forward.
+    private bool _currentTrackSwitchApplied;
 
     // Continuous playback watchdog (started in StartAsync, stopped on disposal).
     private CancellationTokenSource? _watchdogCts;
@@ -295,6 +315,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 return new FormatRestoreResult(false, message, null);
             }
 
+            Volatile.Write(ref _currentTrackSwitchApplied, true);
             var restoredFormat = verifiedDeviceFormat ?? format;
             var successMessage = $"Restored {AudioFormatTextFormatter.Format(restoredFormat)} on {targetDevice.FriendlyName}.";
             _logger.Info(successMessage);
@@ -459,9 +480,12 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                 watchdogToken,
                 _currentTrackCts?.Token ?? CancellationToken.None);
+            // A mid-track stall on a track whose processing applied a format switch may be
+            // switch-induced renderer damage; one with no applied switch is just a track Apple
+            // Music cannot play, and must stay off the restart-escalation path.
             var recovered = await TryRecoverPlaybackWithNudgesAsync(
                 deviceId, null, generation, null, null, null, correlation, linked.Token,
-                NoSwitchRecoveryNudgeLimit);
+                NoSwitchRecoveryNudgeLimit, switchApplied: Volatile.Read(ref _currentTrackSwitchApplied));
             if (recovered)
             {
                 _logger.Info("Watchdog: playback recovered.", correlation);
@@ -663,6 +687,12 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 {
                     var skipReason = "Render stream not active; skipped format switch to avoid zombie playback.";
                     _logger.Warn(skipReason, correlation);
+
+                    // No switch will happen, so the track-change mute has nothing left to
+                    // protect. Release it NOW: the health check + recovery below can hold this
+                    // state for ~20 s, and a track whose stream comes up late would render into
+                    // enforced silence for that whole window.
+                    UnmuteTargetDeviceAfterProcessing(correlation);
                     var gateHealth = await VerifyPlaybackHealthAfterNoSwitchAsync(
                         targetDevice.Id, targetDevice.FriendlyName, generation, track, resolved, decision.CurrentDeviceFormat, correlation, cancellationToken);
                     resumeAttempted = resumeAttempted || gateHealth != PlaybackHealthOutcome.Healthy;
@@ -706,6 +736,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 return;
             }
 
+            Volatile.Write(ref _currentTrackSwitchApplied, true);
             var applyDiagnostics = _audioEndpointController.GetLastApplyDiagnostics(targetDevice.Id);
             _logger.Info(
                 $"Applied {decision.SelectedFormat.DisplayName} to {targetDevice.FriendlyName} using {resolved!.Source}. " +
@@ -858,7 +889,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                     correlation);
                 var recovered = await TryRecoverPlaybackWithNudgesAsync(
                     deviceId, targetDeviceName, generation, track, resolved, currentFormat, correlation, cancellationToken,
-                    NoSwitchRecoveryNudgeLimit);
+                    NoSwitchRecoveryNudgeLimit, switchApplied: false);
                 return recovered ? PlaybackHealthOutcome.Recovered : PlaybackHealthOutcome.RecoveryFailed;
             }
 
@@ -1341,7 +1372,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         AudioFormatCandidate? verifiedDeviceFormat,
         DiagnosticsLogger.LogCorrelation correlation,
         CancellationToken cancellationToken,
-        int maxNudges = MaxPlaybackRecoveryNudges)
+        int maxNudges = MaxPlaybackRecoveryNudges,
+        bool switchApplied = true)
     {
         for (var nudge = 1; nudge <= maxNudges; nudge++)
         {
@@ -1391,6 +1423,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             {
                 _logger.Info($"Playback recovered after nudge {nudge}/{maxNudges}.", correlation);
                 _recentRecoveryFailures.Clear();
+                _lastRecoverySkipWasNoSwitchStall = false;
                 return true;
             }
         }
@@ -1399,6 +1432,21 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
         if (cancellationToken.IsCancellationRequested)
         {
+            return false;
+        }
+
+        if (!switchApplied)
+        {
+            // No format switch was applied, so this is not switch-induced renderer damage —
+            // Apple Music simply cannot play the track (bad local file: the renderer never
+            // starts). Restarting Apple Music would not help and must not be primed either:
+            // these stalls never count toward the cascade threshold. Skip forward only, and
+            // once a cluster is underway relax the cooldown so consecutive dead tracks are
+            // skipped through quickly instead of stranding the queue in silence.
+            var cooldown = _lastRecoverySkipWasNoSwitchStall
+                ? ConsecutiveNoSwitchStallSkipCooldown
+                : RecoverySkipCooldown;
+            await TryEscalateSkipNextAsync(cooldown, isNoSwitchStall: true, correlation, cancellationToken);
             return false;
         }
 
@@ -1413,6 +1461,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             if (restarted)
             {
                 _recentRecoveryFailures.Clear();
+                _lastRecoverySkipWasNoSwitchStall = false;
                 return true;
             }
 
@@ -1424,20 +1473,30 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         // Apple Music's playback pipeline. Skip forward (bounded by a cooldown so a persistent
         // wedge can never runaway-skip through the queue). The resulting track change supersedes
         // this processing and the next track is handled — and health-checked — normally.
-        if (DateTimeOffset.UtcNow - _lastRecoverySkipUtc < RecoverySkipCooldown)
+        await TryEscalateSkipNextAsync(RecoverySkipCooldown, isNoSwitchStall: false, correlation, cancellationToken);
+        return false;
+    }
+
+    private async Task TryEscalateSkipNextAsync(
+        TimeSpan cooldown,
+        bool isNoSwitchStall,
+        DiagnosticsLogger.LogCorrelation correlation,
+        CancellationToken cancellationToken)
+    {
+        if (DateTimeOffset.UtcNow - _lastRecoverySkipUtc < cooldown)
         {
             _logger.Warn("Skipping the skip-next escalation: a recovery skip already fired within the cooldown window.", correlation);
-            return false;
+            return;
         }
 
         _lastRecoverySkipUtc = DateTimeOffset.UtcNow;
+        _lastRecoverySkipWasNoSwitchStall = isNoSwitchStall;
         var skipped = await _mediaTransportController.TrySkipNextAsync(cancellationToken);
         _logger.Warn(
             skipped
                 ? "Recovery escalated: skipped to the next track to force Apple Music to rebuild its playback pipeline."
                 : "Recovery escalation failed: the skip-next command was rejected.",
             correlation);
-        return false;
     }
 
     private void RecordRecoveryFailure()
@@ -1562,6 +1621,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             _currentTrackCts = new CancellationTokenSource();
             _currentTrackKey = track.UniqueKey;
             Volatile.Write(ref _suppressWatchdogUntilNextTrack, false);
+            Volatile.Write(ref _currentTrackSwitchApplied, false);
             _logger.Info(
                 string.IsNullOrWhiteSpace(supersededTrackKey)
                     ? "Starting track processing."

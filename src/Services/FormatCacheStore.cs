@@ -121,6 +121,53 @@ public sealed class FormatCacheStore
         return true;
     }
 
+    public bool StoreNoMatch(string uniqueKey)
+        => StoreNoMatch(uniqueKey, DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// Records that the catalog lookup found nothing usable for this track, so replays skip the
+    /// catalog search (until the entry ages past the no-match retry window). Never called for
+    /// transient failures — only for a completed search with no acceptable result.
+    /// </summary>
+    internal bool StoreNoMatch(string uniqueKey, DateTimeOffset storedAtUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(uniqueKey);
+
+        lock (_sync)
+        {
+            if (!EnsureInitialized())
+            {
+                return false;
+            }
+
+            var candidate = CopyEntries();
+            var cachedAtUtc = candidate.TryGetValue(uniqueKey, out var current)
+                ? current.CachedAtUtc
+                : storedAtUtc;
+            candidate[uniqueKey] = new FormatCacheEntry(
+                uniqueKey,
+                null,
+                0,
+                0,
+                ResolutionConfidence.Exact,
+                "No Apple Music catalog match",
+                cachedAtUtc,
+                storedAtUtc,
+                NoMatch: true);
+            EvictOldestBeyondCap(candidate);
+
+            if (!TryPersist(candidate))
+            {
+                return false;
+            }
+
+            _entries = candidate;
+        }
+
+        TryLogInfo($"Catalog no-match cached for '{uniqueKey}'; replays skip the catalog lookup.");
+        return true;
+    }
+
     internal long ClearGeneration
     {
         get
@@ -422,11 +469,12 @@ public sealed class FormatCacheStore
         foreach (var pair in persistedEntries)
         {
             var entry = pair.Value;
+            // NoMatch entries legitimately carry zero format fields; everything else must have a
+            // positive rate and depth.
             if (string.IsNullOrWhiteSpace(pair.Key) ||
                 entry is null ||
                 !string.Equals(pair.Key, entry.UniqueKey, StringComparison.Ordinal) ||
-                entry.SampleRateHz <= 0 ||
-                entry.BitDepth <= 0 ||
+                (!entry.NoMatch && (entry.SampleRateHz <= 0 || entry.BitDepth <= 0)) ||
                 !Enum.IsDefined(entry.Confidence) ||
                 string.IsNullOrWhiteSpace(entry.Description) ||
                 entry.CachedAtUtc == default ||

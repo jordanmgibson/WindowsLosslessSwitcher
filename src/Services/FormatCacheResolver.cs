@@ -30,7 +30,9 @@ public sealed class FormatCacheResolver : IFormatResolver
     {
         cancellationToken.ThrowIfCancellationRequested();
         var cacheKey = FormatCacheKey.Create(_storefront, track);
-        if (_store.TryGet(cacheKey, out var entry) && entry is not null)
+        // NoMatch entries carry no format — the catalog resolver downstream consumes them (it
+        // skips its search and falls through to the local-file resolver).
+        if (_store.TryGet(cacheKey, out var entry) && entry is not null && !entry.NoMatch)
         {
             _logger.Info(
                 $"Format cache hit for '{track.Title ?? track.UniqueKey}': {entry.BitDepth}/{entry.SampleRateHz}.");

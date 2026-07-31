@@ -322,6 +322,35 @@ public sealed class FormatCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public void StoreNoMatch_RoundTripsAndSurvivesReload()
+    {
+        Assert.True(_store.StoreNoMatch("local-track"));
+
+        Assert.True(_store.TryGet("local-track", out var entry));
+        Assert.NotNull(entry);
+        Assert.True(entry.NoMatch);
+        Assert.Throws<InvalidOperationException>(() => entry.ToResolvedFormat());
+
+        var reloaded = new FormatCacheStore(_cachePath, null);
+        Assert.True(reloaded.TryGet("local-track", out var persisted));
+        Assert.NotNull(persisted);
+        Assert.True(persisted.NoMatch);
+    }
+
+    [Fact]
+    public void StoreNoMatch_CanBeReplacedByAPositiveMatch()
+    {
+        // A track that later appears in the catalog upgrades its entry in place.
+        Assert.True(_store.StoreNoMatch("cache-key"));
+        Assert.True(_store.Store("cache-key", CreateCatalogFormat(96000, 24, "song-123")));
+
+        Assert.True(_store.TryGet("cache-key", out var entry));
+        Assert.NotNull(entry);
+        Assert.False(entry.NoMatch);
+        Assert.Equal(96000, entry.SampleRateHz);
+    }
+
+    [Fact]
     public void Store_SweepsOrphanedTemporaryFiles()
     {
         Directory.CreateDirectory(_directory);

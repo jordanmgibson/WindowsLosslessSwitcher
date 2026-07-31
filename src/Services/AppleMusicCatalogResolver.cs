@@ -160,9 +160,29 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         }
     }
 
+    // How long a cached no-match suppresses the catalog search for a track. Local files never
+    // match, but tracks do get added to Apple Music, so the search re-runs occasionally.
+    internal static TimeSpan NoMatchRetryInterval { get; set; } = TimeSpan.FromDays(30);
+
     private async Task<ResolvedAudioFormat?> ResolveInternalAsync(TrackSnapshot track, CancellationToken cancellationToken)
     {
         var normalizedTrack = AppleMusicTrackMetadataNormalizer.NormalizeSnapshot(track);
+
+        // A cached no-match (typically a local file) skips the whole lookup: searching the
+        // catalog on every replay of a track that is known not to be there wastes seconds of
+        // resolution time and network traffic. The entry expires so newly published tracks are
+        // eventually found.
+        var cacheKey = _formatCacheStore is null ? null : FormatCacheKey.Create(_storefront, normalizedTrack);
+        if (cacheKey is not null &&
+            _formatCacheStore!.TryGet(cacheKey, out var cachedEntry) &&
+            cachedEntry is { NoMatch: true } &&
+            DateTimeOffset.UtcNow - cachedEntry.LastVerifiedAtUtc < NoMatchRetryInterval)
+        {
+            _logger.Verbose(
+                $"Skipping catalog lookup for {normalizedTrack.UniqueKey}: cached no-match from {cachedEntry.LastVerifiedAtUtc:u}.");
+            return null;
+        }
+
         var developerToken = await GetDeveloperTokenAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(developerToken))
         {
@@ -173,6 +193,13 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         if (bestMatch is null)
         {
             _logger.Info($"Catalog resolver found no Apple Music match for {normalizedTrack.UniqueKey}.");
+            // The search completed against a live catalog and found nothing — a durable outcome
+            // worth caching. (Transient failures throw and never reach this point.)
+            if (cacheKey is not null)
+            {
+                _formatCacheStore!.StoreNoMatch(cacheKey);
+            }
+
             return null;
         }
 
@@ -180,6 +207,8 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         var song = await GetSongDetailAsync(matchedSong.Id, developerToken, cancellationToken);
         if (song is null)
         {
+            // Ambiguous: could be a transient fetch failure rather than "no manifest" — do not
+            // cache a negative for it.
             _logger.Info($"Catalog resolver found no enhanced HLS manifest for {normalizedTrack.UniqueKey}.");
             return null;
         }
@@ -187,7 +216,13 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
         var songDetail = song.Value;
         if (string.IsNullOrWhiteSpace(songDetail.EnhancedHlsUrl))
         {
+            // The catalog affirmatively says this song has no lossless manifest — durable.
             _logger.Info($"Catalog resolver found no enhanced HLS manifest for {normalizedTrack.UniqueKey}.");
+            if (cacheKey is not null)
+            {
+                _formatCacheStore!.StoreNoMatch(cacheKey);
+            }
+
             return null;
         }
 
@@ -215,7 +250,10 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
 
         // Cache successful lookups immediately so results aren't lost if track processing
         // is cancelled (e.g., the user skips the track) before it reaches the coordinator.
-        _formatCacheStore?.Store(FormatCacheKey.Create(_storefront, normalizedTrack), resolved);
+        if (cacheKey is not null)
+        {
+            _formatCacheStore!.Store(cacheKey, resolved);
+        }
         return resolved;
     }
 

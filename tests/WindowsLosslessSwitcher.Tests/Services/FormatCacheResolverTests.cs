@@ -32,6 +32,19 @@ public sealed class FormatCacheResolverTests : IDisposable
     }
 
     [Fact]
+    public async Task ResolveAsync_IgnoresNoMatchEntries()
+    {
+        // A no-match entry carries no format; the catalog resolver downstream consumes it.
+        var track = CreateTrack();
+        Assert.True(_store.StoreNoMatch(FormatCacheKey.Create("us", track)));
+        var resolver = new FormatCacheResolver(_store, _logger);
+
+        var result = await resolver.ResolveAsync(track, CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
     public async Task ResolveAsync_ReturnsCachedFormatAndEntryOnHit()
     {
         var track = CreateTrack();

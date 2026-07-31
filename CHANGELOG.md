@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The tray flyout's track title and artist line scroll (marquee) when they
   are too long to fit, instead of being cut off with an ellipsis.
+- Local files no longer hit the Apple Music catalog on every play. A track
+  whose catalog search finds nothing (or whose match has no lossless
+  manifest) is remembered as a no-match in the format cache, and replays go
+  straight to the local-file resolver; the search re-runs after 30 days in
+  case the track was since added to Apple Music. Transient network or token
+  failures are never cached.
 
 ## [1.0.0-beta.7] - 2026-07-30
 
