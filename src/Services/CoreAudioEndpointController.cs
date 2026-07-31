@@ -222,8 +222,25 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
                 var session = sessions[i];
                 try
                 {
-                    using var process = System.Diagnostics.Process.GetProcessById((int)session.GetProcessID);
-                    if (!string.Equals(process.ProcessName, processName, StringComparison.OrdinalIgnoreCase))
+                    bool counts;
+                    try
+                    {
+                        using var process = System.Diagnostics.Process.GetProcessById((int)session.GetProcessID);
+                        counts = string.Equals(process.ProcessName, processName, StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch
+                    {
+                        // The owning process has exited but its session object lives on — and
+                        // Apple's media pipeline sometimes renders the CURRENT track into a
+                        // previous agent instance's orphaned session (verified live 2026-07-31:
+                        // a "stalled" track metered 0.32 on a dead-PID session while the live
+                        // agent's session read zero, and the app skipped a playing song). A dead
+                        // process cannot be some other app playing audio, so orphaned sessions
+                        // count toward the target's peak.
+                        counts = true;
+                    }
+
+                    if (!counts)
                     {
                         continue;
                     }
@@ -236,7 +253,7 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
                 }
                 catch
                 {
-                    // Session owner exited between enumeration and lookup — contributes no audio.
+                    // Meter read failed for this session — contributes no audio.
                 }
             }
 

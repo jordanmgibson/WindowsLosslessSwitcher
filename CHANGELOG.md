@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tracks rendering into an orphaned audio session are no longer treated as
+  stalled. Apple's media pipeline sometimes plays the current track through a
+  previous media-agent instance's session (whose process has exited); the
+  render-stream check only counted sessions owned by the live agent process,
+  so such tracks looked silent and were muted and skipped mid-play. Sessions
+  whose owning process has exited now count toward the agent's audio.
 - Switch popups no longer show the previous track's album artwork. Artwork is
   tagged with the track it was read for and only rendered against that track;
   a byte-identical thumbnail arriving for a new track (Windows briefly serves
