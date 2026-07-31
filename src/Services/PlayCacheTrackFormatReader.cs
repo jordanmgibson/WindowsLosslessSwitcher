@@ -126,8 +126,30 @@ public sealed class PlayCacheTrackFormatReader : ILocalTrackFileFormatReader
         return null;
     }
 
+    /// <summary>
+    /// Diagnostic escape hatch (set <c>WLS_DISABLE_INUSE_PROBE=1</c>): suppresses the exclusive-open
+    /// probe entirely so the reader never opens a PlayCache file. Used to test whether the probe
+    /// races Apple Music's own open of the file it is about to play — see
+    /// <see cref="IsHeldOpenByAnotherProcess"/>. Matching falls back to the freshly-written,
+    /// download-folder, and cache-info signals, which are non-invasive.
+    /// </summary>
+    internal static bool DisableInUseProbe { get; set; } =
+        Environment.GetEnvironmentVariable("WLS_DISABLE_INUSE_PROBE") == "1";
+
+    /// <summary>
+    /// True when another process holds the file open. Detection requires requesting exclusivity —
+    /// which is also the hazard: if Apple Music has not opened the file YET, this open succeeds and
+    /// denies Apple Music all access for as long as it is held. Losing that race leaves the track
+    /// unable to load at all (silent, timeline frozen at 0:00), which the coordinator then sees as
+    /// a stalled render stream. Callers must therefore keep the candidate set as small as possible.
+    /// </summary>
     private static bool IsHeldOpenByAnotherProcess(FileInfo file)
     {
+        if (DisableInUseProbe)
+        {
+            return false;
+        }
+
         try
         {
             using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.None);

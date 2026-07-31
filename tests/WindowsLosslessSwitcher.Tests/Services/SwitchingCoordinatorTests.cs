@@ -417,6 +417,46 @@ public sealed class SwitchingCoordinatorTests
     }
 
     [Fact]
+    public async Task NoSwitchStall_WhenInPlaceRetryStartsTheTrack_KeepsItInsteadOfSkipping()
+    {
+        // A track Apple Music never started, that DOES start on a second attempt: the patient
+        // retry must rescue it so the user keeps the song.
+        var trackSource = new TestTrackSource();
+        var mediaTransportController = new TestMediaTransportController();
+        var renderActive = false;
+        var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            RenderSessionActiveProvider = () => renderActive,
+            MasterPeakValue = 0f,
+        };
+
+        // The second play (the patient retry's) is the one that finally loads the track.
+        var playCount = 0;
+        mediaTransportController.PlayInvoked = () =>
+        {
+            playCount++;
+            if (playCount >= 2)
+            {
+                renderActive = true;
+                audioEndpointController.MasterPeakValue = 0.05f;
+                audioEndpointController.ProcessSessionPeakOverride = 0.05f;
+            }
+        };
+
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(CurrentFormat)));
+        await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
+        var recovered = WaitForStatusAsync(
+            coordinator,
+            status => status.FailureReason?.Contains("stalled and was recovered automatically") == true);
+
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        trackSource.RaiseTrackChanged(CreateTrack());
+
+        await recovered.WaitAsync(RecoveryTimeout);
+        Assert.Equal(0, mediaTransportController.SkipNextCallCount); // the song was kept, not skipped
+    }
+
+    [Fact]
     public async Task TrackChange_WhenRenderStreamNeverActivates_SkipsSwitchToAvoidZombie()
     {
         var trackSource = new TestTrackSource();
@@ -441,9 +481,10 @@ public sealed class SwitchingCoordinatorTests
         var finalStatus = await finalStatusTask.WaitAsync(RecoveryTimeout);
         Assert.False(finalStatus.WasFormatChanged);
         Assert.Equal(0, audioEndpointController.TryApplyFormatCallCount); // never switched into the bad state
-        Assert.Equal(1, mediaTransportController.PauseCallCount); // single no-switch recovery nudge
-        Assert.Equal(1, mediaTransportController.PlayCallCount);
-        Assert.Equal(1, mediaTransportController.SkipNextCallCount); // hard wedge → skip-next escalation
+        // One no-switch recovery nudge, then the in-place patient retry — both pause/play cycles.
+        Assert.Equal(2, mediaTransportController.PauseCallCount);
+        Assert.Equal(2, mediaTransportController.PlayCallCount);
+        Assert.Equal(1, mediaTransportController.SkipNextCallCount); // still exactly one skip escalation
         Assert.Contains("could not be recovered", finalStatus.FailureReason);
     }
 

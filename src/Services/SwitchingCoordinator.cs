@@ -108,6 +108,11 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     // only guards against back-to-back command bursts.
     private static readonly TimeSpan ConsecutiveNoSwitchStallSkipCooldown = TimeSpan.FromSeconds(5);
 
+    // A track that never loaded needs Apple Music to redo the load, which takes longer than the
+    // mid-stream nudge settle; the observation window matches, since audio arrives late here.
+    private static readonly TimeSpan PatientRetrySettleDelay = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan PatientRetryObservationWindow = TimeSpan.FromSeconds(6);
+
     // The continuous watchdog samples playback at this interval whenever no track is being
     // processed. The per-path health checks only run at track-processing time, but a wedge can
     // strike at ANY moment (proven live: a track passed its processing-time check, then died
@@ -204,6 +209,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     // after an applied switch count toward the Apple Music restart threshold (switch-induced
     // renderer damage); stalls without one only ever skip forward.
     private bool _currentTrackSwitchApplied;
+    private bool _patientRetryUsedForTrack;
 
     // Continuous playback watchdog (started in StartAsync, stopped on disposal).
     private CancellationTokenSource? _watchdogCts;
@@ -1438,10 +1444,17 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         if (!switchApplied)
         {
             // No format switch was applied, so this is not switch-induced renderer damage —
-            // Apple Music simply cannot play the track (bad local file: the renderer never
-            // starts). Restarting Apple Music would not help and must not be primed either:
-            // these stalls never count toward the cascade threshold. Skip forward only, and
-            // once a cluster is underway relax the cooldown so consecutive dead tracks are
+            // Apple Music simply never started the track. Before giving the song up, try once
+            // more in place with a longer settle than the nudge loop uses: some of these
+            // recover on a second attempt, and skipping costs the user the song outright.
+            if (await TryPatientRetryAsync(deviceId, correlation, cancellationToken))
+            {
+                return true;
+            }
+
+            // Still nothing. Restarting Apple Music would not help and must not be primed
+            // either: these stalls never count toward the cascade threshold. Skip forward only,
+            // and once a cluster is underway relax the cooldown so consecutive dead tracks are
             // skipped through quickly instead of stranding the queue in silence.
             var cooldown = _lastRecoverySkipWasNoSwitchStall
                 ? ConsecutiveNoSwitchStallSkipCooldown
@@ -1475,6 +1488,45 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         // this processing and the next track is handled — and health-checked — normally.
         await TryEscalateSkipNextAsync(RecoverySkipCooldown, isNoSwitchStall: false, correlation, cancellationToken);
         return false;
+    }
+
+    /// <summary>
+    /// Last chance for a track Apple Music never started: one pause / longer settle / play cycle.
+    /// The nudge loop's 400 ms settle is tuned for reviving a wedged renderer mid-stream; a track
+    /// that never loaded needs Apple Music to redo the load, which takes longer. Runs at most once
+    /// per track (a cluster of unplayable tracks must not each pay the extra wait twice) and is
+    /// deliberately seek-free — see the skip-previous warning on the restart path.
+    /// </summary>
+    private async Task<bool> TryPatientRetryAsync(
+        string deviceId,
+        DiagnosticsLogger.LogCorrelation correlation,
+        CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _patientRetryUsedForTrack))
+        {
+            return false;
+        }
+
+        Volatile.Write(ref _patientRetryUsedForTrack, true);
+        _logger.Info("Track never started; retrying it in place before skipping.", correlation);
+
+        await _mediaTransportController.TryPauseAsync(cancellationToken);
+        await Task.Delay(PatientRetrySettleDelay, cancellationToken);
+        if (!await ResumePlaybackAfterPauseAsync(deviceId, cancellationToken))
+        {
+            return false;
+        }
+
+        if (!await ObservePlaybackRestoredAsync(deviceId, PatientRetryObservationWindow, cancellationToken))
+        {
+            _logger.Warn("In-place retry did not start the track either.", correlation);
+            return false;
+        }
+
+        _logger.Info("In-place retry started the track; keeping it instead of skipping.", correlation);
+        _recentRecoveryFailures.Clear();
+        _lastRecoverySkipWasNoSwitchStall = false;
+        return true;
     }
 
     private async Task TryEscalateSkipNextAsync(
@@ -1622,6 +1674,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             _currentTrackKey = track.UniqueKey;
             Volatile.Write(ref _suppressWatchdogUntilNextTrack, false);
             Volatile.Write(ref _currentTrackSwitchApplied, false);
+            Volatile.Write(ref _patientRetryUsedForTrack, false);
             _logger.Info(
                 string.IsNullOrWhiteSpace(supersededTrackKey)
                     ? "Starting track processing."
