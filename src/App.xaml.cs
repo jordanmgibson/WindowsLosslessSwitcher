@@ -233,7 +233,8 @@ public partial class App : Application
                         _switchToastService?.ShowRateUndetermined(
                             status.ActiveDeviceName,
                             status.AppliedFormat,
-                            _viewModel.ArtworkImage);
+                            ArtworkForTrack(status.Track?.UniqueKey),
+                            status.Track);
                     }
                     else
                     {
@@ -243,7 +244,7 @@ public partial class App : Application
                             _viewModel.PreviousAppliedFormat,
                             status.AppliedFormat,
                             status.Track,
-                            _viewModel.ArtworkImage,
+                            ArtworkForTrack(status.Track?.UniqueKey),
                             _settings.IncludeTrackMetadataInSwitchToasts);
                     }
                 }
@@ -271,10 +272,7 @@ public partial class App : Application
                 e.UpdatedFormat.BitDepth,
                 2);
             // Only pass artwork when it belongs to the track this cache update is about.
-            var artwork = _latestStatus?.Track?.UniqueKey is { } currentKey &&
-                string.Equals(currentKey, e.Track?.UniqueKey, StringComparison.Ordinal)
-                ? _viewModel.ArtworkImage
-                : null;
+            var artwork = ArtworkForTrack(e.Track?.UniqueKey);
             _switchToastService?.ShowFormatCacheUpdated(
                 _latestStatus?.ActiveDeviceName,
                 previousFormat,
@@ -633,19 +631,28 @@ public partial class App : Application
     private void UpdateArtworkIfChanged()
     {
         var snapshot = _trackSource?.GetArtworkSnapshot();
-        if (snapshot is null || string.Equals(snapshot.Revision, _lastArtworkRevision, StringComparison.Ordinal))
+        if (snapshot is null)
         {
             return;
         }
 
-        _lastArtworkRevision = snapshot.Revision;
+        // Same bytes for a different track still needs a refresh: the artwork's track tag drives
+        // which toasts may show it, so the (revision, track) pair is the change stamp.
+        var stamp = $"{snapshot.Revision}|{snapshot.TrackUniqueKey}";
+        if (string.Equals(stamp, _lastArtworkRevision, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastArtworkRevision = stamp;
         if (!snapshot.HasArtwork)
         {
-            _viewModel.UpdateArtwork(null, null);
+            _viewModel.UpdateArtwork(null, null, null);
             return;
         }
 
         var bytes = snapshot.Bytes!;
+        var trackKey = snapshot.TrackUniqueKey;
         // Decode + color analysis off the UI thread; both results are frozen/immutable.
         Task.Run(() =>
         {
@@ -653,7 +660,12 @@ public partial class App : Application
             {
                 var image = DecodeArtwork(bytes);
                 var glow = ArtworkColorAnalyzer.TryGetDominantColor(bytes);
-                Dispatcher.BeginInvoke(() => _viewModel.UpdateArtwork(image, glow));
+                Dispatcher.BeginInvoke(() =>
+                {
+                    _viewModel.UpdateArtwork(image, glow, trackKey);
+                    // Late artwork lands in an already-open toast for the same track.
+                    _switchToastService?.UpdateToastArtwork(trackKey, image);
+                });
             }
             catch (Exception ex)
             {
@@ -661,6 +673,13 @@ public partial class App : Application
             }
         });
     }
+
+    /// <summary>Artwork for a toast: only when the loaded artwork belongs to that exact track.</summary>
+    private System.Windows.Media.ImageSource? ArtworkForTrack(string? trackKey) =>
+        trackKey is not null &&
+        string.Equals(_viewModel.ArtworkTrackKey, trackKey, StringComparison.Ordinal)
+            ? _viewModel.ArtworkImage
+            : null;
 
     // GSMTC delivers artwork asynchronously after the track properties, so a status update often
     // lands before the thumbnail. A few short rechecks pick it up; the revision guard makes them

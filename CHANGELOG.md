@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Switch popups no longer show the previous track's album artwork. Artwork is
+  tagged with the track it was read for and only rendered against that track;
+  a byte-identical thumbnail arriving for a new track (Windows briefly serves
+  the old image after a track change) is re-read after a short delay; and
+  artwork that finishes loading after the popup appeared now lands in the
+  open popup instead of being lost.
+- The rich switch popup's artwork and text are vertically centered.
+- Window titles and the main window's header now read "Windows Lossless
+  Switcher".
+
+### Changed
+
+- The tray flyout's track title and artist line scroll (marquee) when they
+  are too long to fit, instead of being cut off with an ellipsis.
+
 ## [1.0.0-beta.7] - 2026-07-30
 
 ### Added

@@ -1,10 +1,10 @@
-<controls:NocturneWindow x:Class="WindowsLosslessSwitcher.Views.HeroWindow"
+﻿<controls:NocturneWindow x:Class="WindowsLosslessSwitcher.Views.HeroWindow"
                          xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                          xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                          xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls"
                          xmlns:converters="clr-namespace:WindowsLosslessSwitcher.Converters"
                          xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-                         Title="Lossless Switcher"
+                         Title="Windows Lossless Switcher"
                          Width="400"
                          Background="{StaticResource Nocturne.Brush.Ground}"
                          FontFamily="{StaticResource Nocturne.FontFamily}"
@@ -30,7 +30,7 @@
                                      Height="15" />
           <TextBlock Margin="9,0,0,0"
                      VerticalAlignment="Center"
-                     controls:Tracking.Text="LOSSLESS SWITCHER"
+                     controls:Tracking.Text="WINDOWS LOSSLESS SWITCHER"
                      FontSize="10.5"
                      Foreground="{StaticResource Nocturne.Brush.Text45}" />
         </StackPanel>

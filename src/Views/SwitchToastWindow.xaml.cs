@@ -87,6 +87,18 @@ public partial class SwitchToastWindow : Window, ISwitchToastWindow
 
     public void StartAutoClose() => _closeTimer.Start();
 
+    /// <summary>
+    /// Swaps in artwork that finished loading after the toast was shown (GSMTC art routinely
+    /// lags the track change by a few seconds).
+    /// </summary>
+    public void UpdateArtwork(System.Windows.Media.ImageSource artwork)
+    {
+        RichArtworkBrush.ImageSource = artwork;
+        RichArtworkHost.Visibility = Visibility.Visible;
+        PillArtworkBrush.ImageSource = artwork;
+        PillArtworkHost.Visibility = Visibility.Visible;
+    }
+
     private void PositionInBottomRightCorner()
     {
         UpdateLayout();

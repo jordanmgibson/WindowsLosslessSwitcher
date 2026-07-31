@@ -1,8 +1,8 @@
-<Window x:Class="WindowsLosslessSwitcher.Views.TrayFlyoutWindow"
+﻿<Window x:Class="WindowsLosslessSwitcher.Views.TrayFlyoutWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls"
-        Title="Lossless Switcher"
+        Title="Windows Lossless Switcher"
         AllowsTransparency="True"
         Background="Transparent"
         FontFamily="{StaticResource Nocturne.FontFamily}"
@@ -70,15 +70,13 @@
         <StackPanel Grid.Column="1"
                     Margin="11,0"
                     VerticalAlignment="Center">
-          <TextBlock FontSize="{StaticResource Nocturne.FontSize.Control}"
-                     FontWeight="Medium"
-                     Text="{Binding TrackTitleText}"
-                     TextTrimming="CharacterEllipsis" />
-          <TextBlock Margin="0,1,0,0"
-                     FontSize="{StaticResource Nocturne.FontSize.Small}"
-                     Foreground="{StaticResource Nocturne.Brush.Text50}"
-                     Text="{Binding TrackMetaText}"
-                     TextTrimming="CharacterEllipsis" />
+          <controls:MarqueeTextBlock TextElement.FontSize="{StaticResource Nocturne.FontSize.Control}"
+                                     TextElement.FontWeight="Medium"
+                                     Text="{Binding TrackTitleText}" />
+          <controls:MarqueeTextBlock Margin="0,1,0,0"
+                                     TextElement.FontSize="{StaticResource Nocturne.FontSize.Small}"
+                                     TextElement.Foreground="{StaticResource Nocturne.Brush.Text50}"
+                                     Text="{Binding TrackMetaText}" />
         </StackPanel>
         <Border Grid.Column="2"
                 VerticalAlignment="Center"

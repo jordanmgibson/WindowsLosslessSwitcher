@@ -1,9 +1,9 @@
-<controls:NocturneWindow x:Class="WindowsLosslessSwitcher.Views.SettingsWindow"
+﻿<controls:NocturneWindow x:Class="WindowsLosslessSwitcher.Views.SettingsWindow"
                          xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                          xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                          xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls"
                          xmlns:pages="clr-namespace:WindowsLosslessSwitcher.Views.SettingsPages"
-                         Title="Lossless Switcher — Settings"
+                         Title="Windows Lossless Switcher — Settings"
                          Width="780"
                          Height="540"
                          MinWidth="780"
@@ -45,7 +45,7 @@
               <TextBlock FontSize="{StaticResource Nocturne.FontSize.Body}"
                          FontWeight="Medium"
                          LineHeight="15.6"
-                         Text="Lossless Switcher" />
+                         Text="Windows Lossless Switcher" />
               <TextBlock FontSize="{StaticResource Nocturne.FontSize.Kicker}"
                          Foreground="{StaticResource Nocturne.Brush.Text40}"
                          Text="for Apple Music" />

@@ -1,4 +1,4 @@
-using WindowsLosslessSwitcher.Models;
+﻿using WindowsLosslessSwitcher.Models;
 using Application = System.Windows.Application;
 using ImageSource = System.Windows.Media.ImageSource;
 
@@ -21,7 +21,8 @@ internal sealed record SwitchToastContent(
     string? NewBitsText,
     string? TrackLine,
     string? DeviceName,
-    ImageSource? Artwork);
+    ImageSource? Artwork,
+    string? TrackUniqueKey = null);
 
 public sealed class SwitchToastService : IDisposable
 {
@@ -35,6 +36,7 @@ public sealed class SwitchToastService : IDisposable
     private readonly Action<Action> _invoke;
     private ISwitchToastWindow? _currentToast;
     private ToastKind? _currentToastKind;
+    private string? _currentToastTrackKey;
     private bool _disposed;
 
     public SwitchToastService()
@@ -76,7 +78,11 @@ public sealed class SwitchToastService : IDisposable
     /// Rate-undetermined fallback notification — always the rich layout, because the pill
     /// cannot carry the explanation. Same replacement semantics as a switch toast.
     /// </summary>
-    public void ShowRateUndetermined(string? deviceName, AudioFormatCandidate appliedFormat, ImageSource? artwork)
+    public void ShowRateUndetermined(
+        string? deviceName,
+        AudioFormatCandidate appliedFormat,
+        ImageSource? artwork,
+        TrackSnapshot? track = null)
     {
         var content = new SwitchToastContent(
             ToastVariant.Rich,
@@ -87,8 +93,32 @@ public sealed class SwitchToastService : IDisposable
             $"{appliedFormat.BitDepth}-bit",
             "Apple Music didn't report this track's rate — using a safe fallback.",
             deviceName,
-            artwork);
+            artwork,
+            track?.UniqueKey);
         RunOnDispatcher(() => ShowSwitchToastCore(content));
+    }
+
+    /// <summary>
+    /// Delivers late-loading artwork into the currently visible toast when it belongs to the
+    /// same track. GSMTC artwork routinely arrives seconds after the track change — often after
+    /// the toast is already on screen.
+    /// </summary>
+    public void UpdateToastArtwork(string? trackKey, ImageSource? artwork)
+    {
+        if (trackKey is null || artwork is null)
+        {
+            return;
+        }
+
+        RunOnDispatcher(() =>
+        {
+            if (!_disposed &&
+                _currentToast is { } toast &&
+                string.Equals(_currentToastTrackKey, trackKey, StringComparison.Ordinal))
+            {
+                toast.UpdateArtwork(artwork);
+            }
+        });
     }
 
     public void ShowFormatCacheUpdated(
@@ -137,7 +167,8 @@ public sealed class SwitchToastService : IDisposable
             $"{appliedFormat.BitDepth}-bit",
             includeMetadata ? BuildTrackLine(track) : null,
             deviceName,
-            artwork);
+            artwork,
+            track?.UniqueKey);
 
     private static string? BuildTrackLine(TrackSnapshot? track)
     {
@@ -180,6 +211,7 @@ public sealed class SwitchToastService : IDisposable
         var previousToast = _currentToast;
         _currentToast = toast;
         _currentToastKind = ToastKind.Switch;
+        _currentToastTrackKey = content.TrackUniqueKey;
         previousToast?.Close();
         ShowCurrentToast(toast);
     }
@@ -189,6 +221,7 @@ public sealed class SwitchToastService : IDisposable
         var toast = CreateToast(ToastKind.FormatCacheUpdate, request.Content);
         _currentToast = toast;
         _currentToastKind = ToastKind.FormatCacheUpdate;
+        _currentToastTrackKey = request.Content.TrackUniqueKey;
         ShowCurrentToast(toast);
     }
 
@@ -310,4 +343,6 @@ internal interface ISwitchToastWindow
     void Close();
 
     void StartAutoClose();
+
+    void UpdateArtwork(ImageSource artwork);
 }

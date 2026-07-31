@@ -161,7 +161,123 @@ public sealed class AppleMusicTrackSourceTests
         Assert.Equal(["Real Song"], received);
     }
 
+    // ── Artwork tagging + stale-read retry ────────────────────────────────────
+
+    [Fact]
+    public async Task ProcessResolvedSnapshot_TagsArtworkWithTrackKey()
+    {
+        await using var source = CreateSource();
+        var track = CreateTrack("Song A", "Artist");
+
+        await source.ProcessResolvedSnapshotAsync(
+            track,
+            CreateSessionSnapshot(track),
+            _ => Task.FromResult(CreateArtwork([1, 2, 3], "AAA")),
+            publishTrackSnapshot: false,
+            reason: "test",
+            callbackLatencyMs: 0,
+            CancellationToken.None);
+
+        var applied = source.GetArtworkSnapshot();
+        Assert.Equal("AAA", applied.Revision);
+        Assert.Equal(track.UniqueKey, applied.TrackUniqueKey);
+    }
+
+    [Fact]
+    public async Task ProcessResolvedSnapshot_RetriesByteIdenticalArtworkForDifferentTrack()
+    {
+        // GSMTC often serves the PREVIOUS track's thumbnail right after a track change; that
+        // reads as byte-identical artwork (same SHA revision) for a new track key, and one
+        // delayed re-read must replace it.
+        var originalDelay = AppleMusicTrackSource.StaleArtworkRetryDelay;
+        AppleMusicTrackSource.StaleArtworkRetryDelay = TimeSpan.FromMilliseconds(30);
+        try
+        {
+            await using var source = CreateSource();
+            var trackA = CreateTrack("Song A", "Artist");
+            await source.ProcessResolvedSnapshotAsync(
+                trackA,
+                CreateSessionSnapshot(trackA),
+                _ => Task.FromResult(CreateArtwork([1, 2, 3], "AAA")),
+                publishTrackSnapshot: false,
+                reason: "test",
+                callbackLatencyMs: 0,
+                CancellationToken.None);
+
+            var retryCalls = 0;
+            var trackB = CreateTrack("Song B", "Artist");
+            await source.ProcessResolvedSnapshotAsync(
+                trackB,
+                CreateSessionSnapshot(trackB),
+                _ => Task.FromResult(CreateArtwork([1, 2, 3], "AAA")),
+                publishTrackSnapshot: false,
+                reason: "test",
+                callbackLatencyMs: 0,
+                CancellationToken.None,
+                _ =>
+                {
+                    retryCalls++;
+                    return Task.FromResult(CreateArtwork([9, 9, 9], "BBB"));
+                });
+
+            Assert.Equal(1, retryCalls);
+            var applied = source.GetArtworkSnapshot();
+            Assert.Equal("BBB", applied.Revision);
+            Assert.Equal(trackB.UniqueKey, applied.TrackUniqueKey);
+        }
+        finally
+        {
+            AppleMusicTrackSource.StaleArtworkRetryDelay = originalDelay;
+        }
+    }
+
+    [Fact]
+    public async Task ProcessResolvedSnapshot_DoesNotRetryIdenticalArtworkForSameTrack()
+    {
+        // Repeat callbacks for the SAME track legitimately return the same bytes — no retry.
+        await using var source = CreateSource();
+        var track = CreateTrack("Song A", "Artist");
+        await source.ProcessResolvedSnapshotAsync(
+            track,
+            CreateSessionSnapshot(track),
+            _ => Task.FromResult(CreateArtwork([1, 2, 3], "AAA")),
+            publishTrackSnapshot: false,
+            reason: "test",
+            callbackLatencyMs: 0,
+            CancellationToken.None);
+
+        var retryCalls = 0;
+        await source.ProcessResolvedSnapshotAsync(
+            track,
+            CreateSessionSnapshot(track),
+            _ => Task.FromResult(CreateArtwork([1, 2, 3], "AAA")),
+            publishTrackSnapshot: false,
+            reason: "test",
+            callbackLatencyMs: 0,
+            CancellationToken.None,
+            _ =>
+            {
+                retryCalls++;
+                return Task.FromResult(MediaArtworkSnapshot.CreateUnavailable());
+            });
+
+        Assert.Equal(0, retryCalls);
+        Assert.Equal("AAA", source.GetArtworkSnapshot().Revision);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static MediaSessionSnapshot CreateSessionSnapshot(TrackSnapshot track) =>
+        MediaSessionSnapshot.CreateUnavailable() with
+        {
+            SourceAppUserModelId = track.SourceAppUserModelId,
+            Title = track.Title,
+            Artist = track.Artist,
+            Album = track.Album,
+        };
+
+    private static MediaArtworkSnapshot CreateArtwork(byte[] bytes, string revision) =>
+        new(bytes, "image/jpeg", revision, DateTimeOffset.UtcNow);
 
     private static AppleMusicTrackSource CreateSource(
         TimeSpan? placeholderDebounce = null,

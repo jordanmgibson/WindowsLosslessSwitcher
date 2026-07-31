@@ -732,11 +732,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// The unique key of the track the current <see cref="ArtworkImage"/> was read for. GSMTC
+    /// artwork lags track changes, so anything rendering artwork against a specific track must
+    /// check this before using the image.
+    /// </summary>
+    public string? ArtworkTrackKey { get; private set; }
+
     /// <summary>Called by the composition root with the decoded artwork (or null to clear).</summary>
-    public void UpdateArtwork(ImageSource? image, Color? glowColor)
+    public void UpdateArtwork(ImageSource? image, Color? glowColor, string? trackKey = null)
     {
         ArtworkImage = image;
         ArtworkGlowColor = glowColor ?? Color.FromRgb(0x42, 0x3A, 0x6A);
+        ArtworkTrackKey = image is null ? null : trackKey;
     }
 
     /// <summary>

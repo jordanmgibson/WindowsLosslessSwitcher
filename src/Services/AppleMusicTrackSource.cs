@@ -52,6 +52,7 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
     private TrackSnapshot? _lastRealTrack;
     private MediaSessionSnapshot _sessionSnapshot = MediaSessionSnapshot.CreateUnavailable();
     private MediaArtworkSnapshot _artworkSnapshot = MediaArtworkSnapshot.CreateUnavailable();
+    private MediaArtworkSnapshot? _lastAppliedRealArtwork;
     private long _snapshotGeneration;
 
     public AppleMusicTrackSource(DiagnosticsLogger logger)
@@ -493,8 +494,17 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
             publishTrackSnapshot,
             reason,
             callbackStopwatch.ElapsedMilliseconds,
-            CancellationToken.None);
+            CancellationToken.None,
+            cancellation => ReadArtworkFreshAsync(session, cancellation));
     }
+
+    // GSMTC's thumbnail often lags a track change: the media-properties callback for the NEW
+    // track can still stream the PREVIOUS track's image. Detected by byte-identical artwork
+    // (same SHA revision) arriving for a different track key; one delayed re-read (against a
+    // freshly fetched properties object — the original's thumbnail reference stays stale) gets
+    // the real image. Same-album tracks legitimately share bytes, so the retry result is applied
+    // either way; they just gain a short delay.
+    internal static TimeSpan StaleArtworkRetryDelay { get; set; } = TimeSpan.FromMilliseconds(1200);
 
     internal async Task ProcessResolvedSnapshotAsync(
         TrackSnapshot snapshot,
@@ -503,7 +513,8 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         bool publishTrackSnapshot,
         string reason,
         long callbackLatencyMs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<MediaArtworkSnapshot>>? artworkRetryLoader = null)
     {
         if (publishTrackSnapshot)
         {
@@ -518,6 +529,14 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         try
         {
             var artworkSnapshot = await artworkLoader(cancellationToken);
+            if (artworkRetryLoader is not null && IsSuspectedStaleArtwork(snapshot, artworkSnapshot))
+            {
+                _logger.Verbose(
+                    $"Artwork for {snapshot.UniqueKey} is byte-identical to the previous track's; re-reading after a delay.");
+                await Task.Delay(StaleArtworkRetryDelay, cancellationToken);
+                artworkSnapshot = await artworkRetryLoader(cancellationToken);
+            }
+
             ApplyArtworkSnapshotIfCurrent(snapshot, sessionSnapshot, artworkSnapshot, reason);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -526,6 +545,39 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         catch (Exception ex)
         {
             _logger.Warn($"Failed to refresh Apple Music artwork ({reason}): {ex.Message}");
+        }
+    }
+
+    private bool IsSuspectedStaleArtwork(TrackSnapshot snapshot, MediaArtworkSnapshot artworkSnapshot)
+    {
+        lock (_sessionStateSync)
+        {
+            return artworkSnapshot.HasArtwork &&
+                   _lastAppliedRealArtwork is { } last &&
+                   string.Equals(artworkSnapshot.Revision, last.Revision, StringComparison.Ordinal) &&
+                   !string.Equals(snapshot.UniqueKey, last.TrackUniqueKey, StringComparison.Ordinal);
+        }
+    }
+
+    private async Task<MediaArtworkSnapshot> ReadArtworkFreshAsync(
+        GlobalSystemMediaTransportControlsSession session,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var properties = await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
+            return properties is null
+                ? MediaArtworkSnapshot.CreateUnavailable()
+                : await ReadArtworkSnapshotAsync(properties, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Failed to re-read Apple Music artwork: {ex.Message}");
+            return MediaArtworkSnapshot.CreateUnavailable();
         }
     }
 
@@ -857,6 +909,10 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         MediaArtworkSnapshot artworkSnapshot,
         string reason)
     {
+        // Tag the artwork with the track it was read for, so consumers can refuse to render it
+        // against a different track.
+        artworkSnapshot = artworkSnapshot with { TrackUniqueKey = snapshot.UniqueKey };
+
         lock (_sessionStateSync)
         {
             if (!IsSameTrack(_sessionSnapshot, snapshot))
@@ -873,6 +929,10 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
                 ObservedAtUtc = DateTimeOffset.UtcNow,
             };
             _artworkSnapshot = artworkSnapshot;
+            if (artworkSnapshot.HasArtwork)
+            {
+                _lastAppliedRealArtwork = artworkSnapshot;
+            }
         }
     }
 

@@ -43,7 +43,7 @@
         <Border Grid.Column="0"
                 Width="56"
                 Height="56"
-                VerticalAlignment="Top"
+                VerticalAlignment="Center"
                 CornerRadius="6">
           <Border.Background>
             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -68,7 +68,9 @@
           </Grid>
         </Border>
 
-        <StackPanel Grid.Column="1" Margin="13,0,0,0">
+        <StackPanel Grid.Column="1"
+                    Margin="13,0,0,0"
+                    VerticalAlignment="Center">
           <Grid>
             <TextBlock x:Name="KickerText"
                        VerticalAlignment="Center"

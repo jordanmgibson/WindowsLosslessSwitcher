@@ -1,4 +1,4 @@
-using WindowsLosslessSwitcher.Models;
+﻿using WindowsLosslessSwitcher.Models;
 using WindowsLosslessSwitcher.Services;
 using Xunit;
 
@@ -194,6 +194,30 @@ public sealed class SwitchToastServiceTests
         Assert.Contains("96 kHz", toast.Content.NewFormatText);
     }
 
+    [Fact]
+    public void UpdateToastArtwork_ReachesOnlyTheMatchingCurrentToast()
+    {
+        var factory = new RecordingToastFactory();
+        using var service = CreateService(factory);
+        var track = CreateTrack("Song A");
+        var artwork = new System.Windows.Media.DrawingImage();
+
+        service.ShowSwitchedFormat("DAC", null, UpdatedFormat, track, null, includeMetadata: true);
+
+        // A different track's late artwork must not land in this toast.
+        service.UpdateToastArtwork("some-other-track-key", artwork);
+        Assert.Null(factory.Toasts[0].UpdatedArtwork);
+
+        // The same track's late artwork does.
+        service.UpdateToastArtwork(track.UniqueKey, artwork);
+        Assert.Same(artwork, factory.Toasts[0].UpdatedArtwork);
+
+        // A closed toast no longer receives updates.
+        factory.Toasts[0].RaiseClosed();
+        service.UpdateToastArtwork(track.UniqueKey, new System.Windows.Media.DrawingImage());
+        Assert.Same(artwork, factory.Toasts[0].UpdatedArtwork);
+    }
+
     private static SwitchToastService CreateService(RecordingToastFactory factory) =>
         new(factory.Create, () => true, action => action());
 
@@ -252,6 +276,10 @@ public sealed class SwitchToastServiceTests
         public void StartAutoClose()
         {
         }
+
+        public System.Windows.Media.ImageSource? UpdatedArtwork { get; private set; }
+
+        public void UpdateArtwork(System.Windows.Media.ImageSource artwork) => UpdatedArtwork = artwork;
 
         public void RaiseClosed() => Closed?.Invoke(this, EventArgs.Empty);
     }
