@@ -63,5 +63,8 @@
   <ItemGroup>
     <ApplicationDefinition Remove="App.xaml" />
     <Resource Include="Assets\WLS.ico" />
+    <Resource Include="Assets\Fonts\Inter-Regular.ttf" />
+    <Resource Include="Assets\Fonts\Inter-Medium.ttf" />
+    <None Include="Assets\Fonts\Inter-LICENSE.txt" />
   </ItemGroup>
 </Project>

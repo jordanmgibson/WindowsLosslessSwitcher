@@ -1,0 +1,24 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+
+  <!-- Inter 400/500 is bundled; Segoe UI Variable then Segoe UI are the fallbacks. Hierarchy in
+       Nocturne comes from size and space, never weight above Medium. -->
+  <FontFamily x:Key="Nocturne.FontFamily">pack://application:,,,/Assets/Fonts/#Inter, Segoe UI Variable Text, Segoe UI</FontFamily>
+  <FontFamily x:Key="Nocturne.FontFamily.Mono">Cascadia Mono, Consolas</FontFamily>
+
+  <sys:Double x:Key="Nocturne.FontSize.Kicker">10</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Faint">10.5</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Small">11</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Note">11.5</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Secondary">12</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Control">12.5</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Body">13</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.CardTitle">14.5</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Heading">16</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.ReadoutSmall">16.5</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.HeroTitle">17</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.Readout">19</sys:Double>
+  <sys:Double x:Key="Nocturne.FontSize.ReadoutHero">25</sys:Double>
+
+</ResourceDictionary>

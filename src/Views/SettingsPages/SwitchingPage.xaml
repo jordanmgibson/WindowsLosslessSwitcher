@@ -1,0 +1,277 @@
+<UserControl x:Class="WindowsLosslessSwitcher.Views.SettingsPages.SwitchingPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls"
+             xmlns:converters="clr-namespace:WindowsLosslessSwitcher.Converters">
+  <UserControl.Resources>
+    <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    <converters:EqualityToBoolConverter x:Key="EqualityToBool" />
+  </UserControl.Resources>
+  <StackPanel>
+    <TextBlock FontSize="{StaticResource Nocturne.FontSize.Heading}"
+               FontWeight="Medium"
+               Text="Switching" />
+
+    <TextBlock Margin="0,16,0,0"
+               controls:Tracking.Text="DEVICE MODE"
+               Style="{StaticResource Nocturne.Kicker}" />
+    <Border Margin="0,8,0,0"
+            HorizontalAlignment="Left"
+            Background="{StaticResource Nocturne.Brush.Recessed}"
+            BorderBrush="{StaticResource Nocturne.Brush.Hover}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="3">
+      <StackPanel Orientation="Horizontal">
+        <RadioButton Content="Follow default device"
+                     GroupName="DeviceMode"
+                     IsChecked="{Binding SelectedMode, Converter={StaticResource EqualityToBool}, ConverterParameter=FollowDefault}"
+                     Style="{StaticResource Nocturne.SegmentedOption}" />
+        <RadioButton Content="Pin a device"
+                     GroupName="DeviceMode"
+                     IsChecked="{Binding SelectedMode, Converter={StaticResource EqualityToBool}, ConverterParameter=PinnedDevice}"
+                     Style="{StaticResource Nocturne.SegmentedOption}" />
+      </StackPanel>
+    </Border>
+
+    <StackPanel Margin="0,10,0,0" Visibility="{Binding IsSelectedDeviceSelectionVisible, Converter={StaticResource BoolToVisibility}}">
+      <ListBox ItemsSource="{Binding Devices}"
+               SelectedValue="{Binding SelectedDeviceId}"
+               SelectedValuePath="Id"
+               Style="{StaticResource Nocturne.DeviceList}">
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <StackPanel Orientation="Horizontal">
+              <Grid Width="14"
+                    Height="14"
+                    VerticalAlignment="Center">
+                <Ellipse Width="14" Height="14">
+                  <Ellipse.Style>
+                    <Style TargetType="Ellipse">
+                      <Setter Property="Fill" Value="Transparent" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                          <Setter Property="Fill" Value="{StaticResource Nocturne.Brush.AccentTint}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Ellipse.Style>
+                </Ellipse>
+                <Ellipse Width="8" Height="8">
+                  <Ellipse.Style>
+                    <Style TargetType="Ellipse">
+                      <Setter Property="Fill" Value="{StaticResource Nocturne.Brush.Ring}" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                          <Setter Property="Fill" Value="{StaticResource Nocturne.Brush.Accent}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Ellipse.Style>
+                </Ellipse>
+              </Grid>
+              <TextBlock Margin="10,0,0,0"
+                         VerticalAlignment="Center"
+                         FontSize="{StaticResource Nocturne.FontSize.Control}"
+                         Text="{Binding FriendlyName}" />
+            </StackPanel>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+      <Button Margin="0,2,0,0"
+              HorizontalAlignment="Left"
+              Command="{Binding RefreshDevicesCommand}"
+              Content="Refresh devices"
+              FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+              Padding="10,5"
+              Style="{StaticResource Nocturne.Button.Ghost}" />
+    </StackPanel>
+
+    <Control Margin="0,20,0,0" Style="{StaticResource Nocturne.Divider}" />
+
+    <StackPanel Margin="0,8,0,0">
+      <Grid Margin="0,10,0,10">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0">
+          <TextBlock FontSize="{StaticResource Nocturne.FontSize.Body}" Text="Switch bit depth as well as sample rate" />
+          <TextBlock Margin="0,2,0,0"
+                     FontSize="{StaticResource Nocturne.FontSize.Small}"
+                     Foreground="{StaticResource Nocturne.Brush.Text40}"
+                     Text="When off, the default bit depth below is always used" />
+        </StackPanel>
+        <ToggleButton Grid.Column="1"
+                      Margin="12,0,0,0"
+                      VerticalAlignment="Center"
+                      IsChecked="{Binding SwitchBitDepth}"
+                      Style="{StaticResource Nocturne.ToggleSwitch}" />
+      </Grid>
+
+      <Grid Margin="0,0,0,10" Visibility="{Binding UseFixedBitDepthSelection, Converter={StaticResource BoolToVisibility}}">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0"
+                   VerticalAlignment="Center"
+                   FontSize="{StaticResource Nocturne.FontSize.Body}"
+                   Foreground="{StaticResource Nocturne.Brush.Text70}"
+                   Text="Default bit depth" />
+        <Border Grid.Column="1"
+                Background="{StaticResource Nocturne.Brush.Recessed}"
+                BorderBrush="{StaticResource Nocturne.Brush.Hover}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="3">
+          <StackPanel Orientation="Horizontal">
+            <RadioButton Content="16-bit"
+                         GroupName="DefaultBitDepth"
+                         IsChecked="{Binding DefaultBitDepth, Converter={StaticResource EqualityToBool}, ConverterParameter=16}"
+                         Style="{StaticResource Nocturne.SegmentedOption}" />
+            <RadioButton Content="24-bit"
+                         GroupName="DefaultBitDepth"
+                         IsChecked="{Binding DefaultBitDepth, Converter={StaticResource EqualityToBool}, ConverterParameter=24}"
+                         Style="{StaticResource Nocturne.SegmentedOption}" />
+          </StackPanel>
+        </Border>
+      </Grid>
+
+      <Grid Margin="0,0,0,10">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0">
+          <TextBlock FontSize="{StaticResource Nocturne.FontSize.Body}" Text="Prefer closest sample-rate multiple" />
+          <TextBlock Margin="0,2,0,0"
+                     FontSize="{StaticResource Nocturne.FontSize.Small}"
+                     Foreground="{StaticResource Nocturne.Brush.Text40}"
+                     Text="For DACs that stay in the 44.1 / 88.2 / 176.4 family" />
+        </StackPanel>
+        <ToggleButton Grid.Column="1"
+                      Margin="12,0,0,0"
+                      VerticalAlignment="Center"
+                      IsChecked="{Binding PreferClosestSampleRateMultiple}"
+                      Style="{StaticResource Nocturne.ToggleSwitch}" />
+      </Grid>
+
+      <Grid Margin="0,0,0,10">
+        <TextBlock VerticalAlignment="Center"
+                   FontSize="{StaticResource Nocturne.FontSize.Body}"
+                   Text="Launch at login" />
+        <ToggleButton HorizontalAlignment="Right"
+                      VerticalAlignment="Center"
+                      IsChecked="{Binding LaunchAtLogin}"
+                      Style="{StaticResource Nocturne.ToggleSwitch}" />
+      </Grid>
+    </StackPanel>
+
+    <TextBlock Margin="0,10,0,0"
+               controls:Tracking.Text="ALLOWED HARDWARE FORMATS"
+               Style="{StaticResource Nocturne.Kicker}" />
+    <TextBlock MaxWidth="460"
+               Margin="0,5,0,0"
+               HorizontalAlignment="Left"
+               FontSize="{StaticResource Nocturne.FontSize.Note}"
+               Foreground="{StaticResource Nocturne.Brush.Text45}"
+               Text="Uncheck rates or depths your hardware can't lock to — for chains where a virtual cable or ASIO bridge reports formats the real DAC doesn't support. Checking everything applies no restriction."
+               TextWrapping="Wrap" />
+    <ItemsControl Margin="0,10,0,0"
+                  ItemsSource="{Binding SampleRateOptions}"
+                  Visibility="{Binding HasFormatOptions, Converter={StaticResource BoolToVisibility}}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <WrapPanel />
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate>
+          <ToggleButton Margin="0,0,6,6"
+                        Content="{Binding Label}"
+                        IsChecked="{Binding IsChecked}"
+                        Style="{StaticResource Nocturne.Chip.Allowed}" />
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+    <ItemsControl ItemsSource="{Binding BitDepthOptions}" Visibility="{Binding HasFormatOptions, Converter={StaticResource BoolToVisibility}}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <WrapPanel />
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate>
+          <ToggleButton Margin="0,0,6,6"
+                        Content="{Binding Label}"
+                        IsChecked="{Binding IsChecked}"
+                        Style="{StaticResource Nocturne.Chip.Allowed}" />
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+    <TextBlock Margin="0,10,0,0"
+               FontSize="{StaticResource Nocturne.FontSize.Note}"
+               Foreground="{StaticResource Nocturne.Brush.Text45}"
+               Text="Formats will appear once the target device reports its capabilities."
+               Visibility="{Binding HasNoFormatOptions, Converter={StaticResource BoolToVisibility}}" />
+    <TextBlock Margin="0,6,0,0"
+               FontSize="{StaticResource Nocturne.FontSize.Small}"
+               Foreground="{StaticResource Nocturne.Brush.Text35}"
+               Text="{Binding AllowedFormatsNoteText}"
+               TextWrapping="Wrap" />
+
+    <TextBlock Margin="0,20,0,0"
+               controls:Tracking.Text="RECOVERY &amp; DIAGNOSTICS"
+               Style="{StaticResource Nocturne.Kicker}" />
+    <Grid Margin="0,10,0,4">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <StackPanel Grid.Column="0">
+        <TextBlock FontSize="{StaticResource Nocturne.FontSize.Body}" Text="Restart Apple Music if playback recovery fails" />
+        <TextBlock Margin="0,2,0,0"
+                   FontSize="{StaticResource Nocturne.FontSize.Small}"
+                   Foreground="{StaticResource Nocturne.Brush.Text40}"
+                   Text="Last-resort recovery only; the Apple Music play queue may reset" />
+      </StackPanel>
+      <ToggleButton Grid.Column="1"
+                    Margin="12,0,0,0"
+                    VerticalAlignment="Center"
+                    IsChecked="{Binding RestartAppleMusicOnPlaybackFailure}"
+                    Style="{StaticResource Nocturne.ToggleSwitch}" />
+    </Grid>
+    <Grid Margin="0,10,0,10">
+      <TextBlock VerticalAlignment="Center"
+                 FontSize="{StaticResource Nocturne.FontSize.Body}"
+                 Text="Write verbose diagnostics to the log file" />
+      <ToggleButton HorizontalAlignment="Right"
+                    VerticalAlignment="Center"
+                    IsChecked="{Binding EnableVerboseDiagnostics}"
+                    Style="{StaticResource Nocturne.ToggleSwitch}" />
+    </Grid>
+
+    <Border Margin="0,14,0,0"
+            Background="{StaticResource Nocturne.Brush.Surface}"
+            BorderBrush="{StaticResource Nocturne.Brush.Ring}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="16,14">
+      <StackPanel>
+        <TextBlock controls:Tracking.Text="ORIGINAL FORMAT" Style="{StaticResource Nocturne.Kicker}" />
+        <TextBlock Margin="0,5,0,0"
+                   FontSize="{StaticResource Nocturne.FontSize.Control}"
+                   Foreground="{StaticResource Nocturne.Brush.Text70}"
+                   Text="{Binding OriginalFormatText}"
+                   TextWrapping="Wrap" />
+        <Button Margin="0,10,0,0"
+                HorizontalAlignment="Left"
+                Command="{Binding RestoreOriginalFormatCommand}"
+                Content="Restore original format"
+                FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+                Style="{StaticResource Nocturne.Button.Primary}" />
+      </StackPanel>
+    </Border>
+  </StackPanel>
+</UserControl>

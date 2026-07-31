@@ -1,0 +1,83 @@
+<UserControl x:Class="WindowsLosslessSwitcher.Views.SettingsPages.CachePage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls"
+             xmlns:converters="clr-namespace:WindowsLosslessSwitcher.Converters">
+  <UserControl.Resources>
+    <converters:EqualityMultiConverter x:Key="EqualityMulti" />
+    <converters:DaysLabelConverter x:Key="DaysLabel" />
+  </UserControl.Resources>
+  <StackPanel>
+    <TextBlock FontSize="{StaticResource Nocturne.FontSize.Heading}"
+               FontWeight="Medium"
+               Text="Catalog cache" />
+    <TextBlock Margin="0,6,0,0"
+               FontSize="{StaticResource Nocturne.FontSize.Control}"
+               Foreground="{StaticResource Nocturne.Brush.Text55}"
+               Text="Catalog lookups are reused and re-checked in the background." />
+
+    <TextBlock Margin="0,16,0,0"
+               controls:Tracking.Text="RE-CHECK CACHED FORMATS AFTER"
+               Style="{StaticResource Nocturne.Kicker}" />
+    <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding FormatCacheRefreshDayOptions}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <WrapPanel />
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate>
+          <ToggleButton Margin="0,0,6,6"
+                        Click="CacheDayChip_OnClick"
+                        Content="{Binding Converter={StaticResource DaysLabel}}"
+                        Style="{StaticResource Nocturne.Chip.Checkable}">
+            <ToggleButton.IsChecked>
+              <MultiBinding Converter="{StaticResource EqualityMulti}" Mode="OneWay">
+                <Binding Path="DataContext.FormatCacheRefreshDays" RelativeSource="{RelativeSource AncestorType=UserControl}" />
+                <Binding />
+              </MultiBinding>
+            </ToggleButton.IsChecked>
+          </ToggleButton>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+
+    <Button Margin="0,12,0,0"
+            HorizontalAlignment="Left"
+            Command="{Binding ClearFormatCacheCommand}"
+            Content="Clear catalog cache"
+            FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+            Style="{StaticResource Nocturne.Button.Primary}" />
+    <TextBlock Margin="0,8,0,0"
+               FontSize="{StaticResource Nocturne.FontSize.Note}"
+               Foreground="{StaticResource Nocturne.Brush.Text40}"
+               Text="{Binding FormatCacheStatusText}"
+               TextWrapping="Wrap" />
+
+    <Control Margin="0,20,0,0" Style="{StaticResource Nocturne.Divider}" />
+
+    <TextBlock Margin="0,16,0,0"
+               controls:Tracking.Text="APPLE MUSIC STOREFRONT"
+               Style="{StaticResource Nocturne.Kicker}" />
+    <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+      <TextBox x:Name="StorefrontTextBox"
+               Width="74"
+               CharacterCasing="Lower"
+               MaxLength="2"
+               PreviewTextInput="StorefrontTextBox_OnPreviewTextInput"
+               Style="{StaticResource Nocturne.TextBox}"
+               Text="{Binding AppleMusicStorefront, UpdateSourceTrigger=LostFocus}"
+               TextAlignment="Center" />
+      <TextBlock Margin="10,0,0,0"
+                 VerticalAlignment="Center"
+                 FontSize="{StaticResource Nocturne.FontSize.Note}"
+                 Foreground="{StaticResource Nocturne.Brush.Text45}"
+                 Text="{Binding StorefrontNoteText}" />
+    </StackPanel>
+    <TextBlock Margin="0,6,0,0"
+               FontSize="{StaticResource Nocturne.FontSize.Small}"
+               Foreground="{StaticResource Nocturne.Brush.Text35}"
+               Text="Two-letter country code (e.g. gb, jp) for catalog lookups. Applies after the app restarts."
+               TextWrapping="Wrap" />
+  </StackPanel>
+</UserControl>

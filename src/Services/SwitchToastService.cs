@@ -1,7 +1,27 @@
 using WindowsLosslessSwitcher.Models;
 using Application = System.Windows.Application;
+using ImageSource = System.Windows.Media.ImageSource;
 
 namespace WindowsLosslessSwitcher.Services;
+
+/// <summary>Which toast layout to render: 1c rich (artwork + transition + track) or 1d pill.</summary>
+internal enum ToastVariant
+{
+    Rich,
+    Pill,
+}
+
+/// <summary>Everything a toast window needs to render either variant.</summary>
+internal sealed record SwitchToastContent(
+    ToastVariant Variant,
+    string Kicker,
+    string? OldFormatText,
+    string? NewFormatText,
+    string? NewRateText,
+    string? NewBitsText,
+    string? TrackLine,
+    string? DeviceName,
+    ImageSource? Artwork);
 
 public sealed class SwitchToastService : IDisposable
 {
@@ -10,7 +30,7 @@ public sealed class SwitchToastService : IDisposable
     private const int MaxPendingFormatCacheUpdates = 3;
 
     private readonly List<FormatCacheToastRequest> _pendingFormatCacheUpdates = new();
-    private readonly Func<string, string, string?, string?, ISwitchToastWindow> _createToast;
+    private readonly Func<SwitchToastContent, ISwitchToastWindow> _createToast;
     private readonly Func<bool> _checkAccess;
     private readonly Action<Action> _invoke;
     private ISwitchToastWindow? _currentToast;
@@ -19,15 +39,14 @@ public sealed class SwitchToastService : IDisposable
 
     public SwitchToastService()
         : this(
-            (title, message, deviceName, trackDetails) =>
-                new SwitchToastWindow(title, message, deviceName, trackDetails),
+            content => new Views.SwitchToastWindow(content),
             () => Application.Current.Dispatcher.CheckAccess(),
             action => Application.Current.Dispatcher.Invoke(action))
     {
     }
 
     internal SwitchToastService(
-        Func<string, string, string?, string?, ISwitchToastWindow> createToast,
+        Func<SwitchToastContent, ISwitchToastWindow> createToast,
         Func<bool> checkAccess,
         Action<Action> invoke)
     {
@@ -36,64 +55,99 @@ public sealed class SwitchToastService : IDisposable
         _invoke = invoke;
     }
 
+    /// <summary>
+    /// The standard switched-format toast. Variant follows the metadata setting: rich card
+    /// with the old→new transition and track line when on, minimal pill when off.
+    /// </summary>
+    public void ShowSwitchedFormat(
+        string? deviceName,
+        AudioFormatCandidate? previousFormat,
+        AudioFormatCandidate appliedFormat,
+        TrackSnapshot? track,
+        ImageSource? artwork,
+        bool includeMetadata)
+    {
+        var content = BuildFormatContent(
+            "LOSSLESS SWITCH", previousFormat, appliedFormat, track, deviceName, artwork, includeMetadata);
+        RunOnDispatcher(() => ShowSwitchToastCore(content));
+    }
+
+    /// <summary>
+    /// Rate-undetermined fallback notification — always the rich layout, because the pill
+    /// cannot carry the explanation. Same replacement semantics as a switch toast.
+    /// </summary>
+    public void ShowRateUndetermined(string? deviceName, AudioFormatCandidate appliedFormat, ImageSource? artwork)
+    {
+        var content = new SwitchToastContent(
+            ToastVariant.Rich,
+            "RATE UNDETERMINED",
+            null,
+            AudioFormatTextFormatter.Format(appliedFormat),
+            AudioFormatTextFormatter.FormatSampleRate(appliedFormat.SampleRateHz),
+            $"{appliedFormat.BitDepth}-bit",
+            "Apple Music didn't report this track's rate — using a safe fallback.",
+            deviceName,
+            artwork);
+        RunOnDispatcher(() => ShowSwitchToastCore(content));
+    }
+
     public void ShowFormatCacheUpdated(
         string? deviceName,
         AudioFormatCandidate previousFormat,
         AudioFormatCandidate updatedFormat,
-        TrackSnapshot? track)
+        TrackSnapshot? track,
+        ImageSource? artwork,
+        bool includeMetadata)
     {
-        var request = new FormatCacheToastRequest(deviceName, previousFormat, updatedFormat, track);
-        if (_checkAccess())
-        {
-            ShowFormatCacheUpdatedCore(request);
-            return;
-        }
-
-        _invoke(() => ShowFormatCacheUpdatedCore(request));
+        var content = BuildFormatContent(
+            "FORMAT UPDATED FOR NEXT PLAYBACK", previousFormat, updatedFormat, track, deviceName, artwork, includeMetadata);
+        var request = new FormatCacheToastRequest(content, track?.UniqueKey);
+        RunOnDispatcher(() => ShowFormatCacheUpdatedCore(request));
     }
 
-    public void ShowSwitchedFormat(string? deviceName, AudioFormatCandidate format, TrackSnapshot? track)
-        => ShowSwitchToast("Switched audio format", AudioFormatTextFormatter.Format(format), deviceName, track);
+    public void DiscardPendingFormatCacheUpdates() => RunOnDispatcher(DiscardPendingFormatCacheUpdatesCore);
 
-    /// <summary>
-    /// Shows a switch-style toast with custom title and message text — used for the
-    /// rate-undetermined fallback notification. Same replacement/queueing semantics as
-    /// <see cref="ShowSwitchedFormat"/>.
-    /// </summary>
-    public void ShowMessage(string title, string message, string? deviceName, TrackSnapshot? track)
-        => ShowSwitchToast(title, message, deviceName, track);
+    public void Dispose() => RunOnDispatcher(DisposeCore);
 
-    private void ShowSwitchToast(string title, string message, string? deviceName, TrackSnapshot? track)
+    private void RunOnDispatcher(Action action)
     {
         if (_checkAccess())
         {
-            ShowSwitchToastCore(title, message, deviceName, track);
+            action();
             return;
         }
 
-        _invoke(() => ShowSwitchToastCore(title, message, deviceName, track));
+        _invoke(action);
     }
 
-    public void DiscardPendingFormatCacheUpdates()
+    private static SwitchToastContent BuildFormatContent(
+        string kicker,
+        AudioFormatCandidate? previousFormat,
+        AudioFormatCandidate appliedFormat,
+        TrackSnapshot? track,
+        string? deviceName,
+        ImageSource? artwork,
+        bool includeMetadata) =>
+        new(
+            includeMetadata ? ToastVariant.Rich : ToastVariant.Pill,
+            kicker,
+            previousFormat is null ? null : AudioFormatTextFormatter.Format(previousFormat),
+            AudioFormatTextFormatter.Format(appliedFormat),
+            AudioFormatTextFormatter.FormatSampleRate(appliedFormat.SampleRateHz),
+            $"{appliedFormat.BitDepth}-bit",
+            includeMetadata ? BuildTrackLine(track) : null,
+            deviceName,
+            artwork);
+
+    private static string? BuildTrackLine(TrackSnapshot? track)
     {
-        if (_checkAccess())
+        if (track is null)
         {
-            DiscardPendingFormatCacheUpdatesCore();
-            return;
+            return null;
         }
 
-        _invoke(DiscardPendingFormatCacheUpdatesCore);
-    }
-
-    public void Dispose()
-    {
-        if (!_checkAccess())
-        {
-            _invoke(DisposeCore);
-            return;
-        }
-
-        DisposeCore();
+        var title = track.Title ?? "Unknown Title";
+        return track.Artist is { Length: > 0 } artist ? $"{title} — {artist}" : title;
     }
 
     private void ShowFormatCacheUpdatedCore(FormatCacheToastRequest request)
@@ -112,19 +166,14 @@ public sealed class SwitchToastService : IDisposable
         ShowFormatCacheToast(request);
     }
 
-    private void ShowSwitchToastCore(string title, string message, string? deviceName, TrackSnapshot? track)
+    private void ShowSwitchToastCore(SwitchToastContent content)
     {
         if (_disposed)
         {
             return;
         }
 
-        var toast = CreateToast(
-            ToastKind.Switch,
-            title,
-            message,
-            deviceName,
-            track);
+        var toast = CreateToast(ToastKind.Switch, content);
 
         // WPF raises Closed synchronously. Make the replacement current first so the old
         // window's handler cannot drain queued cache notifications between switch toasts.
@@ -137,12 +186,7 @@ public sealed class SwitchToastService : IDisposable
 
     private void ShowFormatCacheToast(FormatCacheToastRequest request)
     {
-        var toast = CreateToast(
-            ToastKind.FormatCacheUpdate,
-            "Format updated for next playback",
-            $"{AudioFormatTextFormatter.Format(request.PreviousFormat)} -> {AudioFormatTextFormatter.Format(request.UpdatedFormat)}",
-            request.DeviceName,
-            request.Track);
+        var toast = CreateToast(ToastKind.FormatCacheUpdate, request.Content);
         _currentToast = toast;
         _currentToastKind = ToastKind.FormatCacheUpdate;
         ShowCurrentToast(toast);
@@ -174,11 +218,11 @@ public sealed class SwitchToastService : IDisposable
     {
         // Latest update wins per track: a queued stale entry for the same track would show an
         // outdated transition once the queue drains.
-        var key = request.Track?.UniqueKey;
+        var key = request.TrackKey;
         if (key is not null)
         {
             _pendingFormatCacheUpdates.RemoveAll(pending =>
-                string.Equals(pending.Track?.UniqueKey, key, StringComparison.Ordinal));
+                string.Equals(pending.TrackKey, key, StringComparison.Ordinal));
         }
 
         _pendingFormatCacheUpdates.Add(request);
@@ -188,14 +232,9 @@ public sealed class SwitchToastService : IDisposable
         }
     }
 
-    private ISwitchToastWindow CreateToast(
-        ToastKind kind,
-        string title,
-        string message,
-        string? deviceName,
-        TrackSnapshot? track)
+    private ISwitchToastWindow CreateToast(ToastKind kind, SwitchToastContent content)
     {
-        var toast = _createToast(title, message, deviceName, BuildTrackDetails(track));
+        var toast = _createToast(content);
         toast.Closed += (_, _) => OnToastClosed(toast, kind);
         return toast;
     }
@@ -253,31 +292,13 @@ public sealed class SwitchToastService : IDisposable
         toast?.Close();
     }
 
-    private static string? BuildTrackDetails(TrackSnapshot? track)
-    {
-        if (track is null)
-        {
-            return null;
-        }
-
-        return string.Join(
-            Environment.NewLine,
-            $"Song: {track.Title ?? "Unknown Title"}",
-            $"Artist: {track.Artist ?? "Unknown Artist"}",
-            $"Album: {track.Album ?? "Unknown Album"}");
-    }
-
     private enum ToastKind
     {
         Switch,
         FormatCacheUpdate,
     }
 
-    private sealed record FormatCacheToastRequest(
-        string? DeviceName,
-        AudioFormatCandidate PreviousFormat,
-        AudioFormatCandidate UpdatedFormat,
-        TrackSnapshot? Track);
+    private sealed record FormatCacheToastRequest(SwitchToastContent Content, string? TrackKey);
 }
 
 internal interface ISwitchToastWindow

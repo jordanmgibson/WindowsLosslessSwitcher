@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Complete "Nocturne" redesign of every surface. The main window is now a
+  compact now-playing hero card with album artwork, a large format readout,
+  the previous format ("was …"), and a live status line; "All settings"
+  opens a new dashboard window with Status, Switching, Notifications, Cache,
+  and Updates pages. Bundles the Inter typeface (OFL) and Phosphor icon
+  path data (MIT).
+- A live mini-spectrograph replaces the static brand mark in the hero title
+  bar and the dashboard's nav tile. It follows Apple Music's audio only —
+  capture is scoped to the Apple media agent's process tree via WASAPI
+  process-loopback, so audio from other apps never moves the bars. Capture
+  runs only while a window showing it is visible, pauses when playback is
+  idle, and restarts itself after every device format switch.
+- The switch popup was redesigned and now follows the notification settings:
+  with "Include song, artist, and album" on it is a rich card with artwork
+  and the old→new format transition; with it off, a minimal pill with just
+  the new format.
+- The tray icon now opens a flyout with a mini now-playing row (artwork,
+  track, current format chip), the live switch status, and the menu actions;
+  double-click still opens the main window.
+- The Status page shows the active device's rate/bit-depth chips (current
+  format lit, allow-list exclusions struck through), the resolver source
+  ("Catalog match" / "Local file"), a collapsible raw-details card, and an
+  activity log of recent switches and cache events.
+- The cache page shows live cache statistics ("N cached lookups · storefront:
+  xx") and the storefront detected from the Windows region.
 - "Allowed hardware formats" section in the app window: check exactly the
   sample rates and bit depths your physical hardware accepts (listed from the
   active target device), backed by `allowedSampleRates` and the new
@@ -18,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now editable from the app window: the Apple Music storefront override
   (applies after restart), verbose diagnostics, and the automatic Apple
   Music restart on playback-recovery failure.
+
+### Changed
+
+- Both app windows use custom dark chrome (rounded on Windows 11, square on
+  Windows 10) with the caption drag region and minimize/close buttons drawn
+  by the app; closing still hides to the tray.
+- The old Win32 tray context menu was replaced by the flyout.
 
 ## [1.0.0-beta.6] - 2026-07-30
 

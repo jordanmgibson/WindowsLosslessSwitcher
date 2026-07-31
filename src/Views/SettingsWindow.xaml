@@ -1,0 +1,176 @@
+<controls:NocturneWindow x:Class="WindowsLosslessSwitcher.Views.SettingsWindow"
+                         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                         xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls"
+                         xmlns:pages="clr-namespace:WindowsLosslessSwitcher.Views.SettingsPages"
+                         Title="Lossless Switcher — Settings"
+                         Width="780"
+                         Height="540"
+                         MinWidth="780"
+                         MinHeight="540"
+                         Background="{StaticResource Nocturne.Brush.Ground}"
+                         FontFamily="{StaticResource Nocturne.FontFamily}"
+                         Foreground="{StaticResource Nocturne.Brush.Text}"
+                         ResizeMode="CanResize"
+                         ShowInTaskbar="True"
+                         TextOptions.TextFormattingMode="Display"
+                         WindowStartupLocation="CenterScreen">
+  <Border BorderBrush="{StaticResource Nocturne.Brush.Ring}" BorderThickness="1">
+    <Grid>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="196" />
+        <ColumnDefinition Width="*" />
+      </Grid.ColumnDefinitions>
+
+      <!-- Nav rail -->
+      <Border Grid.Column="0"
+              BorderBrush="{StaticResource Nocturne.Brush.Hairline08}"
+              BorderThickness="0,0,1,0"
+              Padding="14,18">
+        <DockPanel>
+          <StackPanel Margin="4,0"
+                      DockPanel.Dock="Top"
+                      Orientation="Horizontal">
+            <Border Width="30"
+                    Height="30"
+                    Background="{StaticResource Nocturne.Brush.AccentTint}"
+                    BorderBrush="{StaticResource Nocturne.Brush.AccentDeep}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+              <controls:MiniSpectrograph x:Name="NavTileSpectrograph"
+                                         Width="16"
+                                         Height="16" />
+            </Border>
+            <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+              <TextBlock FontSize="{StaticResource Nocturne.FontSize.Body}"
+                         FontWeight="Medium"
+                         LineHeight="15.6"
+                         Text="Lossless Switcher" />
+              <TextBlock FontSize="{StaticResource Nocturne.FontSize.Kicker}"
+                         Foreground="{StaticResource Nocturne.Brush.Text40}"
+                         Text="for Apple Music" />
+            </StackPanel>
+          </StackPanel>
+
+          <StackPanel Margin="4,0"
+                      DockPanel.Dock="Bottom">
+            <TextBlock FontSize="{StaticResource Nocturne.FontSize.Small}"
+                       Foreground="{StaticResource Nocturne.Brush.Text40}"
+                       Text="{Binding AppVersionText}" />
+            <StackPanel Margin="0,3,0,0" Orientation="Horizontal">
+              <Ellipse Width="5"
+                       Height="5"
+                       VerticalAlignment="Center"
+                       Fill="{StaticResource Nocturne.Brush.Accent}" />
+              <TextBlock Margin="6,0,0,0"
+                         VerticalAlignment="Center"
+                         FontSize="{StaticResource Nocturne.FontSize.Small}"
+                         Foreground="{StaticResource Nocturne.Brush.Text55}"
+                         Text="{Binding UpdateBadgeText}" />
+            </StackPanel>
+          </StackPanel>
+
+          <ListBox x:Name="NavList"
+                   Margin="0,22,0,0"
+                   SelectionChanged="NavList_OnSelectionChanged"
+                   Style="{StaticResource Nocturne.NavList}">
+            <ListBoxItem>
+              <StackPanel Orientation="Horizontal">
+                <controls:NocturneIcon Width="16"
+                                       Height="16"
+                                       VerticalAlignment="Center"
+                                       Geometry="{StaticResource Nocturne.Icon.Pulse}" />
+                <TextBlock Margin="10,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="Status" />
+              </StackPanel>
+            </ListBoxItem>
+            <ListBoxItem>
+              <StackPanel Orientation="Horizontal">
+                <controls:NocturneIcon Width="16"
+                                       Height="16"
+                                       VerticalAlignment="Center"
+                                       Geometry="{StaticResource Nocturne.Icon.Faders}" />
+                <TextBlock Margin="10,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="Switching" />
+              </StackPanel>
+            </ListBoxItem>
+            <ListBoxItem>
+              <StackPanel Orientation="Horizontal">
+                <controls:NocturneIcon Width="16"
+                                       Height="16"
+                                       VerticalAlignment="Center"
+                                       Geometry="{StaticResource Nocturne.Icon.Bell}" />
+                <TextBlock Margin="10,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="Notifications" />
+              </StackPanel>
+            </ListBoxItem>
+            <ListBoxItem>
+              <StackPanel Orientation="Horizontal">
+                <controls:NocturneIcon Width="16"
+                                       Height="16"
+                                       VerticalAlignment="Center"
+                                       Geometry="{StaticResource Nocturne.Icon.Database}" />
+                <TextBlock Margin="10,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="Cache" />
+              </StackPanel>
+            </ListBoxItem>
+            <ListBoxItem>
+              <StackPanel Orientation="Horizontal">
+                <controls:NocturneIcon Width="16"
+                                       Height="16"
+                                       VerticalAlignment="Center"
+                                       Geometry="{StaticResource Nocturne.Icon.ArrowCircleUp}" />
+                <TextBlock Margin="10,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="Updates" />
+              </StackPanel>
+            </ListBoxItem>
+          </ListBox>
+        </DockPanel>
+      </Border>
+
+      <!-- Content column -->
+      <Grid Grid.Column="1">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="40" />
+          <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0"
+                    Margin="0,0,6,0"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Center"
+                    Orientation="Horizontal"
+                    WindowChrome.IsHitTestVisibleInChrome="True">
+          <Button Click="MinimizeButton_OnClick" Style="{StaticResource Nocturne.CaptionButton}">
+            <controls:NocturneIcon Width="13"
+                                   Height="13"
+                                   Geometry="{StaticResource Nocturne.Icon.Minus}" />
+          </Button>
+          <Button Click="CloseButton_OnClick" Style="{StaticResource Nocturne.CaptionButton.Close}">
+            <controls:NocturneIcon Width="13"
+                                   Height="13"
+                                   Geometry="{StaticResource Nocturne.Icon.X}" />
+          </Button>
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1"
+                      Padding="26,2,26,0"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Auto">
+          <Grid Margin="0,0,0,26">
+            <pages:StatusPage x:Name="StatusPage" />
+            <pages:SwitchingPage x:Name="SwitchingPage" Visibility="Collapsed" />
+            <pages:NotificationsPage x:Name="NotificationsPage" Visibility="Collapsed" />
+            <pages:CachePage x:Name="CachePage" Visibility="Collapsed" />
+            <pages:UpdatesPage x:Name="UpdatesPage" Visibility="Collapsed" />
+          </Grid>
+        </ScrollViewer>
+      </Grid>
+    </Grid>
+  </Border>
+</controls:NocturneWindow>

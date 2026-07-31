@@ -69,6 +69,18 @@ public sealed class FormatCacheStore
         }
     }
 
+    /// <summary>Number of cached lookups currently stored (loads the cache file on first use).</summary>
+    public int Count
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return EnsureInitialized() ? _entries.Count : 0;
+            }
+        }
+    }
+
     public bool Store(string uniqueKey, ResolvedAudioFormat format)
         => Store(uniqueKey, format, DateTimeOffset.UtcNow);
 

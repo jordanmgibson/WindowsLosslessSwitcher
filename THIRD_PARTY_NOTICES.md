@@ -11,6 +11,13 @@ Windows Lossless Switcher is licensed under `GPL-3.0-or-later` (see [LICENSE](LI
 | [Velopack](https://github.com/velopack/velopack) | 0.0.1298 | [MIT](https://github.com/velopack/velopack/blob/develop/LICENSE) | NuGet |
 | [.NET 8 runtime](https://github.com/dotnet/runtime) (self-contained publish) | 8.x | [MIT](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) | Microsoft |
 
+## Bundled assets
+
+| Component | License | Source |
+| --------- | ------- | ------ |
+| [Inter](https://github.com/rsms/inter) font (Regular, Medium — `src/Assets/Fonts/`) | [SIL OFL 1.1](src/Assets/Fonts/Inter-LICENSE.txt) | rsms/inter v4.1 |
+| [Phosphor Icons](https://github.com/phosphor-icons/core) (vector path data for 18 regular-weight glyphs in `src/Themes/Nocturne.Icons.xaml`) | [MIT](https://github.com/phosphor-icons/core/blob/main/LICENSE) | phosphor-icons/core |
+
 ## Build-time only
 
 | Component | Version | License | Source |

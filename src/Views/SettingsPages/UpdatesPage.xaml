@@ -1,0 +1,71 @@
+<UserControl x:Class="WindowsLosslessSwitcher.Views.SettingsPages.UpdatesPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls">
+  <UserControl.Resources>
+    <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+  </UserControl.Resources>
+  <StackPanel>
+    <TextBlock FontSize="{StaticResource Nocturne.FontSize.Heading}"
+               FontWeight="Medium"
+               Text="Updates" />
+
+    <Border Margin="0,14,0,0"
+            Background="{StaticResource Nocturne.Brush.Surface}"
+            BorderBrush="{StaticResource Nocturne.Brush.Ring}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="16">
+      <StackPanel>
+        <StackPanel Orientation="Horizontal">
+          <Ellipse Width="6"
+                   Height="6"
+                   VerticalAlignment="Center"
+                   Fill="{StaticResource Nocturne.Brush.Accent}" />
+          <TextBlock Margin="8,0,0,0"
+                     VerticalAlignment="Center"
+                     FontSize="{StaticResource Nocturne.FontSize.Body}"
+                     Text="{Binding UpdateStatusText}"
+                     TextWrapping="Wrap" />
+        </StackPanel>
+        <TextBlock Margin="0,4,0,0"
+                   FontSize="{StaticResource Nocturne.FontSize.Note}"
+                   Foreground="{StaticResource Nocturne.Brush.Text40}"
+                   Text="{Binding AppVersionText}" />
+        <StackPanel Margin="0,14,0,0" Orientation="Horizontal">
+          <Button Command="{Binding CheckForUpdatesCommand}"
+                  Content="Check for updates"
+                  FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+                  Style="{StaticResource Nocturne.Button.Primary}" />
+          <Button Margin="8,0,0,0"
+                  Command="{Binding RunUpdatePrimaryActionCommand}"
+                  Content="{Binding UpdatePrimaryActionText}"
+                  FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+                  Style="{StaticResource Nocturne.Button.Primary}"
+                  Visibility="{Binding HasUpdatePrimaryAction, Converter={StaticResource BoolToVisibility}}" />
+          <Button Margin="8,0,0,0"
+                  Command="{Binding OpenReleasesPageCommand}"
+                  Content="Open releases"
+                  FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+                  Style="{StaticResource Nocturne.Button.Ghost}" />
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <Button Margin="0,14,0,0"
+            HorizontalAlignment="Left"
+            Command="{Binding ExportDiagnosticsCommand}"
+            FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+            Style="{StaticResource Nocturne.Button.Ghost}">
+      <StackPanel Orientation="Horizontal">
+        <controls:NocturneIcon Width="14"
+                               Height="14"
+                               VerticalAlignment="Center"
+                               Geometry="{StaticResource Nocturne.Icon.Export}" />
+        <TextBlock Margin="6,0,0,0"
+                   VerticalAlignment="Center"
+                   Text="Export diagnostics" />
+      </StackPanel>
+    </Button>
+  </StackPanel>
+</UserControl>

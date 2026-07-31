@@ -5,6 +5,7 @@ using WindowsLosslessSwitcher.Abstractions;
 using WindowsLosslessSwitcher.Models;
 using WindowsLosslessSwitcher.Services;
 using WindowsLosslessSwitcher.ViewModels;
+using WindowsLosslessSwitcher.Views;
 
 namespace WindowsLosslessSwitcher;
 
@@ -21,12 +22,20 @@ public partial class App : Application
 
     private TrayIconHost? _trayIconHost;
     private SwitchToastService? _switchToastService;
-    private MainWindow? _mainWindow;
+    private HeroWindow? _mainWindow;
+    private SettingsWindow? _settingsWindow;
+    private TrayFlyoutWindow? _trayFlyout;
     private SwitchingCoordinator? _coordinator;
     private FormatCacheStore? _formatCacheStore;
     private bool _clearFormatCacheInFlight;
     private AppSettings? _settings;
     private SwitchingStatus? _latestStatus;
+    private AppleMusicTrackSource? _trackSource;
+    private AppleMusicAudioMonitor? _audioMonitor;
+    private string? _lastArtworkRevision;
+    private System.Windows.Threading.DispatcherTimer? _artworkRecheckTimer;
+    private int _artworkRechecksRemaining;
+    private string? _storefront;
 
     public App()
     {
@@ -75,30 +84,21 @@ public partial class App : Application
         UpdateOriginalFormatRestoreState();
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         _viewModel.RefreshRequested += RefreshDevices;
+        _viewModel.ExportDiagnosticsRequested += OnExportDiagnosticsRequested;
         _viewModel.CheckForUpdatesRequested += OnCheckForUpdatesRequested;
         _viewModel.RunUpdatePrimaryActionRequested += OnRunUpdatePrimaryActionRequested;
         _viewModel.OpenReleasesPageRequested += OnOpenReleasesPageRequested;
         _viewModel.RestoreOriginalFormatRequested += OnRestoreOriginalFormatRequested;
         _viewModel.ClearFormatCacheRequested += OnClearFormatCacheRequested;
-
-        _mainWindow = new MainWindow(_viewModel);
-        _mainWindow.WindowHidden += () => _trayIconHost?.UpdateStatus(_viewModel.ResolverStatusText);
-        _mainWindow.DiagnosticsExportRequested += path => _logger.Export(path);
-        MainWindow = _mainWindow;
+        _viewModel.OpenSettingsWindowRequested += ShowSettingsWindow;
 
         _trayIconHost = new TrayIconHost();
         _trayIconHost.OpenRequested += ShowMainWindow;
-        _trayIconHost.ExitRequested += ExitApplication;
-        _trayIconHost.CheckForUpdatesRequested += OnCheckForUpdatesRequested;
-        _trayIconHost.RunUpdatePrimaryActionRequested += OnRunUpdatePrimaryActionRequested;
-        _trayIconHost.OpenReleasesRequested += OnOpenReleasesPageRequested;
-        _trayIconHost.CurrentFormatTextProvider = GetTrayCurrentFormatText;
+        _trayIconHost.FlyoutRequested += ShowTrayFlyout;
         _trayIconHost.UpdateStatus("Resolver: Starting");
-        _trayIconHost.UpdateCurrentFormat(AudioFormatTextFormatter.BuildTrayCurrentFormatText(null));
         _switchToastService = new SwitchToastService();
         _appUpdater.StatusChanged += OnAppUpdaterStatusChanged;
         _viewModel.UpdateAppVersion(_appUpdater.CurrentStatus);
-        _trayIconHost.UpdateVersion(_appUpdater.CurrentStatus);
 
         // Order matters in the resolver chain:
         // 1. FormatCacheResolver skips calling AppleMusicCatalogResolver on a JSON cache hit.
@@ -134,6 +134,10 @@ public partial class App : Application
             ]);
 
         var appleMusicTrackSource = new AppleMusicTrackSource(_logger);
+        _trackSource = appleMusicTrackSource;
+        _audioMonitor = new AppleMusicAudioMonitor(_logger, appleMusicTrackSource);
+        _storefront = catalogResolver.Storefront;
+        _viewModel.SeedStorefrontInfo(catalogResolver.Storefront);
         _coordinator = new SwitchingCoordinator(
             appleMusicTrackSource,
             appleMusicTrackSource,
@@ -145,11 +149,17 @@ public partial class App : Application
             catalogResolverForCacheVerification);
         _coordinator.StatusChanged += OnCoordinatorStatusChanged;
         _coordinator.FormatCacheUpdated += OnFormatCacheUpdated;
+
+        _mainWindow = new HeroWindow(_viewModel, _audioMonitor);
+        _mainWindow.WindowHidden += () => _trayIconHost?.UpdateStatus(_viewModel.ResolverStatusText);
+        MainWindow = _mainWindow;
+
         // Seed settings before the track source starts so target-device UI and original-format capture
         // use the user's configured selection immediately.
         _coordinator.UpdateSettings(_settings);
         RefreshDevices();
         CaptureOriginalTargetFormatIfMissing();
+        UpdateFormatCacheStatus();
         await _appUpdater.InitializeAsync(CancellationToken.None);
         await _coordinator.StartAsync(_settings, CancellationToken.None);
         ApplyStartupRegistration();
@@ -170,15 +180,19 @@ public partial class App : Application
             await _coordinator.DisposeAsync();
         }
 
+        _audioMonitor?.Dispose();
         _trayIconHost?.Dispose();
         _switchToastService?.Dispose();
+        _artworkRecheckTimer?.Stop();
         _appUpdater.StatusChanged -= OnAppUpdaterStatusChanged;
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        _viewModel.ExportDiagnosticsRequested -= OnExportDiagnosticsRequested;
         _viewModel.CheckForUpdatesRequested -= OnCheckForUpdatesRequested;
         _viewModel.RunUpdatePrimaryActionRequested -= OnRunUpdatePrimaryActionRequested;
         _viewModel.OpenReleasesPageRequested -= OnOpenReleasesPageRequested;
         _viewModel.RestoreOriginalFormatRequested -= OnRestoreOriginalFormatRequested;
         _viewModel.ClearFormatCacheRequested -= OnClearFormatCacheRequested;
+        _viewModel.OpenSettingsWindowRequested -= ShowSettingsWindow;
         _instanceGuard.Dispose();
         base.OnExit(e);
     }
@@ -194,7 +208,9 @@ public partial class App : Application
             _viewModel.UpdateStatus(status);
             UpdateActiveTargetCapabilities();
             _trayIconHost?.UpdateStatus(status.ResolverStatusText);
-            _trayIconHost?.UpdateCurrentFormat(GetTrayCurrentFormatText());
+            RefreshCurrentFormatDisplays();
+            UpdateArtworkIfChanged();
+            ScheduleArtworkRechecks();
 
             if (status.WasFormatChanged && status.AppliedFormat is not null)
             {
@@ -212,18 +228,23 @@ public partial class App : Application
 
                 if (_settings?.EnableSwitchToasts == true)
                 {
-                    var toastTrack = _settings.IncludeTrackMetadataInSwitchToasts ? status.Track : null;
                     if (isUndetermined)
                     {
-                        _switchToastService?.ShowMessage(
-                            "Audio rate could not be determined",
-                            $"Apple Music didn't report this track's rate — using {AudioFormatTextFormatter.Format(status.AppliedFormat)}.",
+                        _switchToastService?.ShowRateUndetermined(
                             status.ActiveDeviceName,
-                            toastTrack);
+                            status.AppliedFormat,
+                            _viewModel.ArtworkImage);
                     }
                     else
                     {
-                        _switchToastService?.ShowSwitchedFormat(status.ActiveDeviceName, status.AppliedFormat, toastTrack);
+                        // UpdateStatus ran above, so PreviousAppliedFormat reflects this switch.
+                        _switchToastService?.ShowSwitchedFormat(
+                            status.ActiveDeviceName,
+                            _viewModel.PreviousAppliedFormat,
+                            status.AppliedFormat,
+                            status.Track,
+                            _viewModel.ArtworkImage,
+                            _settings.IncludeTrackMetadataInSwitchToasts);
                     }
                 }
             }
@@ -232,13 +253,9 @@ public partial class App : Application
 
     private void OnFormatCacheUpdated(object? sender, FormatCacheUpdateEventArgs e)
     {
-        if (_settings?.EnableSwitchToasts != true)
-        {
-            return;
-        }
-
         Dispatcher.BeginInvoke(() =>
         {
+            UpdateFormatCacheStatus();
             if (_settings?.EnableSwitchToasts != true ||
                 _formatCacheStore?.ClearGeneration != e.CacheGeneration)
             {
@@ -253,22 +270,24 @@ public partial class App : Application
                 e.UpdatedFormat.SampleRateHz,
                 e.UpdatedFormat.BitDepth,
                 2);
-            var toastTrack = _settings.IncludeTrackMetadataInSwitchToasts ? e.Track : null;
+            // Only pass artwork when it belongs to the track this cache update is about.
+            var artwork = _latestStatus?.Track?.UniqueKey is { } currentKey &&
+                string.Equals(currentKey, e.Track?.UniqueKey, StringComparison.Ordinal)
+                ? _viewModel.ArtworkImage
+                : null;
             _switchToastService?.ShowFormatCacheUpdated(
                 _latestStatus?.ActiveDeviceName,
                 previousFormat,
                 updatedFormat,
-                toastTrack);
+                e.Track,
+                artwork,
+                _settings.IncludeTrackMetadataInSwitchToasts);
         });
     }
 
     private void OnAppUpdaterStatusChanged(object? sender, UpdateStatusSnapshot status)
     {
-        Dispatcher.Invoke(() =>
-        {
-            _viewModel.UpdateAppVersion(status);
-            _trayIconHost?.UpdateVersion(status);
-        });
+        Dispatcher.Invoke(() => _viewModel.UpdateAppVersion(status));
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -324,7 +343,7 @@ public partial class App : Application
         }
 
         ApplyStartupRegistration();
-        _trayIconHost?.UpdateCurrentFormat(GetTrayCurrentFormatText());
+        RefreshCurrentFormatDisplays();
     }
 
     private void OnCheckForUpdatesRequested() => _ = CheckForUpdatesAsync(userInitiated: true);
@@ -352,7 +371,8 @@ public partial class App : Application
             if (cleared)
             {
                 _switchToastService?.DiscardPendingFormatCacheUpdates();
-                _viewModel.FormatCacheStatusText = "Cache cleared. Formats will be cached again as tracks play.";
+                _viewModel.FormatCacheStatusText = $"Cache cleared just now · 0 lookups · storefront: {_storefront ?? "auto"}";
+                _viewModel.AddActivity("Catalog cache cleared");
                 return;
             }
 
@@ -374,7 +394,7 @@ public partial class App : Application
         }
 
         UpdateActiveTargetCapabilities(forceRefresh: true);
-        _trayIconHost?.UpdateCurrentFormat(GetTrayCurrentFormatText());
+        RefreshCurrentFormatDisplays();
     }
 
     private void CaptureOriginalTargetFormatIfMissing()
@@ -407,6 +427,7 @@ public partial class App : Application
             DateTimeOffset.UtcNow);
         _settingsService.Save(_settings);
         _logger.Info($"Captured original target format {snapshot.Format.DisplayName} for {snapshot.DeviceName ?? snapshot.DeviceId}.");
+        _viewModel.AddActivity($"Original format captured: {AudioFormatTextFormatter.Format(snapshot.Format)}");
         UpdateOriginalFormatRestoreState();
     }
 
@@ -445,6 +466,10 @@ public partial class App : Application
             _viewModel.OriginalFormatText = result.Succeeded
                 ? $"Restored original format. Saved original: {BuildOriginalFormatText(_settings)}"
                 : $"Restore failed: {result.Message}";
+            if (result.Succeeded)
+            {
+                _viewModel.AddActivity($"Restored original format ({AudioFormatTextFormatter.Format(originalFormat)})");
+            }
         }
         catch (OperationCanceledException) when (restoreTimeoutCts.IsCancellationRequested)
         {
@@ -460,7 +485,7 @@ public partial class App : Application
         {
             _viewModel.CanRestoreOriginalFormat = TryGetOriginalTargetFormat(_settings, out _);
             UpdateActiveTargetCapabilities(forceRefresh: true);
-            _trayIconHost?.UpdateCurrentFormat(GetTrayCurrentFormatText());
+            RefreshCurrentFormatDisplays();
         }
     }
 
@@ -539,16 +564,159 @@ public partial class App : Application
         _mainWindow.Activate();
     }
 
+    private void ShowTrayFlyout()
+    {
+        // Exceptions here would be swallowed by the WinForms NotifyIcon WndProc — log them.
+        try
+        {
+            if (_trayFlyout is null)
+            {
+                _trayFlyout = new TrayFlyoutWindow(_viewModel);
+                _trayFlyout.OpenSettingsRequested += ShowMainWindow;
+                _trayFlyout.ExitRequested += ExitApplication;
+            }
+
+            if (_trayFlyout.IsVisible)
+            {
+                _trayFlyout.Hide();
+                return;
+            }
+
+            _trayFlyout.ShowNearTray();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Tray flyout failed to open.", ex);
+        }
+    }
+
+    private void ShowSettingsWindow()
+    {
+        if (_settingsWindow is null)
+        {
+            if (_audioMonitor is null)
+            {
+                return;
+            }
+
+            _settingsWindow = new SettingsWindow(_viewModel, _audioMonitor);
+        }
+
+        _settingsWindow.Show();
+        _settingsWindow.WindowState = WindowState.Normal;
+        _settingsWindow.Activate();
+    }
+
     private void ExitApplication()
     {
         _mainWindow?.AllowCloseAndClose();
+        _settingsWindow?.AllowCloseAndClose();
         Shutdown();
     }
 
-    private string GetTrayCurrentFormatText()
+    /// <summary>Pushes the current target-device format to the view model (flyout chip, "was" seed).</summary>
+    private void RefreshCurrentFormatDisplays()
     {
-        var snapshot = _coordinator?.GetCurrentTargetDeviceFormat();
-        return AudioFormatTextFormatter.BuildTrayCurrentFormatText(snapshot?.Format);
+        var format = _coordinator?.GetCurrentTargetDeviceFormat().Format;
+        _viewModel.UpdateCurrentDeviceFormat(format);
+    }
+
+    private void UpdateFormatCacheStatus()
+    {
+        var count = _formatCacheStore?.Count ?? 0;
+        var storefront = _storefront ?? "auto";
+        _viewModel.FormatCacheStatusText = count == 1
+            ? $"1 cached lookup · storefront: {storefront}"
+            : $"{count} cached lookups · storefront: {storefront}";
+    }
+
+    private void UpdateArtworkIfChanged()
+    {
+        var snapshot = _trackSource?.GetArtworkSnapshot();
+        if (snapshot is null || string.Equals(snapshot.Revision, _lastArtworkRevision, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastArtworkRevision = snapshot.Revision;
+        if (!snapshot.HasArtwork)
+        {
+            _viewModel.UpdateArtwork(null, null);
+            return;
+        }
+
+        var bytes = snapshot.Bytes!;
+        // Decode + color analysis off the UI thread; both results are frozen/immutable.
+        Task.Run(() =>
+        {
+            try
+            {
+                var image = DecodeArtwork(bytes);
+                var glow = ArtworkColorAnalyzer.TryGetDominantColor(bytes);
+                Dispatcher.BeginInvoke(() => _viewModel.UpdateArtwork(image, glow));
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn($"Artwork decode failed: {ex.Message}");
+            }
+        });
+    }
+
+    // GSMTC delivers artwork asynchronously after the track properties, so a status update often
+    // lands before the thumbnail. A few short rechecks pick it up; the revision guard makes them
+    // no-ops when nothing changed.
+    private void ScheduleArtworkRechecks()
+    {
+        _artworkRechecksRemaining = 3;
+        if (_artworkRecheckTimer is null)
+        {
+            _artworkRecheckTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(1.5),
+            };
+            _artworkRecheckTimer.Tick += (_, _) =>
+            {
+                UpdateArtworkIfChanged();
+                if (--_artworkRechecksRemaining <= 0)
+                {
+                    _artworkRecheckTimer!.Stop();
+                }
+            };
+        }
+
+        _artworkRecheckTimer.Stop();
+        _artworkRecheckTimer.Start();
+    }
+
+    private static System.Windows.Media.Imaging.BitmapImage DecodeArtwork(byte[] bytes)
+    {
+        using var stream = new System.IO.MemoryStream(bytes, writable: false);
+        var image = new System.Windows.Media.Imaging.BitmapImage();
+        image.BeginInit();
+        image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+        image.DecodePixelWidth = 352;
+        image.StreamSource = stream;
+        image.EndInit();
+        image.Freeze();
+        return image;
+    }
+
+    private void OnExportDiagnosticsRequested()
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            AddExtension = true,
+            DefaultExt = ".log",
+            Filter = "Log files (*.log)|*.log|All files (*.*)|*.*",
+            FileName = $"windows-lossless-switcher-{DateTime.Now:yyyyMMdd-HHmmss}.log",
+        };
+
+        var owner = Windows.OfType<Window>().FirstOrDefault(window => window.IsActive && window.IsVisible);
+        var confirmed = owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
+        if (confirmed == true)
+        {
+            _logger.Export(dialog.FileName);
+        }
     }
 
     private void UpdateActiveTargetCapabilities(bool forceRefresh = false)

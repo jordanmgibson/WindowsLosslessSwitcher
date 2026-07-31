@@ -1,0 +1,379 @@
+<UserControl x:Class="WindowsLosslessSwitcher.Views.SettingsPages.StatusPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls"
+             xmlns:converters="clr-namespace:WindowsLosslessSwitcher.Converters">
+  <UserControl.Resources>
+    <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    <converters:NullToVisibilityConverter x:Key="NullToVisibility" />
+  </UserControl.Resources>
+  <StackPanel>
+
+    <!-- Now-playing card -->
+    <Border Background="{StaticResource Nocturne.Brush.Surface}"
+            BorderBrush="{StaticResource Nocturne.Brush.Ring}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="16,14">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <Border Grid.Column="0"
+                Width="52"
+                Height="52"
+                CornerRadius="6">
+          <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+              <GradientStop Offset="0" Color="{Binding ArtworkGlowColor}" />
+              <GradientStop Offset="1" Color="#FF1B1D2B" />
+            </LinearGradientBrush>
+          </Border.Background>
+          <Grid>
+            <controls:NocturneIcon Width="20"
+                                   Height="20"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource Nocturne.Brush.White55}"
+                                   Geometry="{StaticResource Nocturne.Icon.MusicNotes}" />
+            <Border CornerRadius="6" Visibility="{Binding HasArtwork, Converter={StaticResource BoolToVisibility}}">
+              <Border.Background>
+                <ImageBrush ImageSource="{Binding ArtworkImage}" Stretch="UniformToFill" />
+              </Border.Background>
+            </Border>
+          </Grid>
+        </Border>
+        <StackPanel Grid.Column="1"
+                    Margin="14,0"
+                    VerticalAlignment="Center">
+          <TextBlock FontSize="{StaticResource Nocturne.FontSize.CardTitle}"
+                     FontWeight="Medium"
+                     Text="{Binding TrackTitleText}"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Margin="0,2,0,0"
+                     FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+                     Foreground="{StaticResource Nocturne.Brush.Text55}"
+                     Text="{Binding TrackMetaText}"
+                     TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+        <Border Grid.Column="2"
+                VerticalAlignment="Center"
+                Background="{StaticResource Nocturne.Brush.AccentTint}"
+                BorderBrush="{StaticResource Nocturne.Brush.AccentDeep}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="9,3"
+                Visibility="{Binding SourceChipText, Converter={StaticResource NullToVisibility}}">
+          <TextBlock FontSize="{StaticResource Nocturne.FontSize.Small}"
+                     Foreground="{StaticResource Nocturne.Brush.AccentLight}"
+                     Text="{Binding SourceChipText}" />
+        </Border>
+      </Grid>
+    </Border>
+
+    <!-- Status row + details disclosure -->
+    <Grid Margin="0,12,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <Ellipse Grid.Column="0"
+               VerticalAlignment="Center"
+               Style="{StaticResource Nocturne.StatusDot}" />
+      <TextBlock Grid.Column="1"
+                 Margin="8,0,0,0"
+                 VerticalAlignment="Center"
+                 FontSize="{StaticResource Nocturne.FontSize.Control}"
+                 Foreground="{StaticResource Nocturne.Brush.Text70}"
+                 Text="{Binding PhaseText}"
+                 TextTrimming="CharacterEllipsis" />
+      <ToggleButton x:Name="DetailsToggle"
+                    Grid.Column="2"
+                    Style="{StaticResource Nocturne.Disclosure}">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock VerticalAlignment="Center" Text="Details" />
+          <controls:NocturneIcon Width="12"
+                                 Height="12"
+                                 Margin="5,1,0,0"
+                                 VerticalAlignment="Center"
+                                 Geometry="{StaticResource Nocturne.Icon.CaretDown}">
+            <controls:NocturneIcon.Style>
+              <Style TargetType="controls:NocturneIcon">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding IsChecked, ElementName=DetailsToggle}" Value="True">
+                    <Setter Property="LayoutTransform">
+                      <Setter.Value>
+                        <RotateTransform Angle="180" />
+                      </Setter.Value>
+                    </Setter>
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </controls:NocturneIcon.Style>
+          </controls:NocturneIcon>
+        </StackPanel>
+      </ToggleButton>
+    </Grid>
+
+    <!-- Details card -->
+    <Border Margin="0,8,0,0"
+            Background="{StaticResource Nocturne.Brush.Recessed}"
+            BorderBrush="{StaticResource Nocturne.Brush.Hover}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="14,10"
+            Visibility="{Binding IsChecked, ElementName=DetailsToggle, Converter={StaticResource BoolToVisibility}}">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="110" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition />
+          <RowDefinition />
+          <RowDefinition />
+          <RowDefinition />
+        </Grid.RowDefinitions>
+        <Grid.Resources>
+          <Style TargetType="TextBlock">
+            <Setter Property="FontSize" Value="{StaticResource Nocturne.FontSize.Note}" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+          </Style>
+        </Grid.Resources>
+        <TextBlock Grid.Row="0"
+                   Grid.Column="0"
+                   Foreground="{StaticResource Nocturne.Brush.Text40}"
+                   Text="Requested" />
+        <TextBlock Grid.Row="0"
+                   Grid.Column="1"
+                   Foreground="{StaticResource Nocturne.Brush.Text75}"><Run Text="{Binding RequestedFormatDisplayText, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding SourceRawText, Mode=OneWay}" /></TextBlock>
+        <TextBlock Grid.Row="1"
+                   Grid.Column="0"
+                   Foreground="{StaticResource Nocturne.Brush.Text40}"
+                   Text="Applied" />
+        <TextBlock Grid.Row="1"
+                   Grid.Column="1"
+                   Foreground="{StaticResource Nocturne.Brush.Text75}"
+                   Text="{Binding AppliedFormatDisplayText}" />
+        <TextBlock Grid.Row="2"
+                   Grid.Column="0"
+                   Foreground="{StaticResource Nocturne.Brush.Text40}"
+                   Text="Resolver" />
+        <TextBlock Grid.Row="2"
+                   Grid.Column="1"
+                   Foreground="{StaticResource Nocturne.Brush.Text75}"
+                   Text="{Binding ResolverStatusText}" />
+        <TextBlock Grid.Row="3"
+                   Grid.Column="0"
+                   Margin="0"
+                   Foreground="{StaticResource Nocturne.Brush.Text40}"
+                   Text="Failure" />
+        <TextBlock Grid.Row="3"
+                   Grid.Column="1"
+                   Margin="0"
+                   Foreground="{StaticResource Nocturne.Brush.Text75}"
+                   Text="{Binding FailureReasonText}" />
+      </Grid>
+    </Border>
+
+    <!-- Stat cards -->
+    <Grid Margin="0,14,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="12" />
+        <ColumnDefinition Width="*" />
+      </Grid.ColumnDefinitions>
+      <Border Grid.Column="0"
+              Background="{StaticResource Nocturne.Brush.Surface}"
+              BorderBrush="{StaticResource Nocturne.Brush.Ring}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16,14">
+        <StackPanel>
+          <TextBlock controls:Tracking.Text="REQUESTED" Style="{StaticResource Nocturne.Kicker}" />
+          <TextBlock Margin="0,6,0,0"
+                     FontSize="{StaticResource Nocturne.FontSize.Readout}"
+                     FontWeight="Medium"
+                     Foreground="{StaticResource Nocturne.Brush.AccentLight}"
+                     Text="{Binding RequestedFormatDisplayText}" />
+          <TextBlock Margin="0,2,0,0"
+                     FontSize="{StaticResource Nocturne.FontSize.Small}"
+                     Foreground="{StaticResource Nocturne.Brush.Text40}"
+                     Text="{Binding SourceChipText}" />
+        </StackPanel>
+      </Border>
+      <Border Grid.Column="2"
+              Background="{StaticResource Nocturne.Brush.Surface}"
+              BorderBrush="{StaticResource Nocturne.Brush.Ring}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16,14">
+        <StackPanel>
+          <TextBlock controls:Tracking.Text="APPLIED ON DEVICE" Style="{StaticResource Nocturne.Kicker}" />
+          <TextBlock Margin="0,6,0,0"
+                     FontSize="{StaticResource Nocturne.FontSize.Readout}"
+                     FontWeight="Medium"
+                     Foreground="{StaticResource Nocturne.Brush.AccentLight}"
+                     Text="{Binding AppliedFormatDisplayText}" />
+          <TextBlock Margin="0,2,0,0"
+                     FontSize="{StaticResource Nocturne.FontSize.Small}"
+                     Foreground="{StaticResource Nocturne.Brush.Text40}"
+                     Text="shared-mode format" />
+        </StackPanel>
+      </Border>
+    </Grid>
+
+    <!-- Output device chips -->
+    <StackPanel Margin="0,18,0,0">
+      <TextBlock controls:Tracking.Text="OUTPUT DEVICE" Style="{StaticResource Nocturne.Kicker}" />
+      <TextBlock Margin="0,5,0,0"
+                 FontSize="{StaticResource Nocturne.FontSize.Body}"
+                 Text="{Binding ActiveTargetDeviceNameText}"
+                 TextTrimming="CharacterEllipsis" />
+      <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding StatusRateChips}">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Border Margin="0,0,6,6"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="9,3">
+              <Border.Style>
+                <Style TargetType="Border">
+                  <Setter Property="Background" Value="{StaticResource Nocturne.Brush.Hover}" />
+                  <Setter Property="BorderBrush" Value="{StaticResource Nocturne.Brush.Ring}" />
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsActive}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource Nocturne.Brush.AccentTint}" />
+                      <Setter Property="BorderBrush" Value="{StaticResource Nocturne.Brush.Accent}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsAllowed}" Value="False">
+                      <Setter Property="Opacity" Value="0.3" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Border.Style>
+              <TextBlock FontSize="{StaticResource Nocturne.FontSize.Note}" Text="{Binding Label}">
+                <TextBlock.Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{StaticResource Nocturne.Brush.Text50}" />
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding IsActive}" Value="True">
+                        <Setter Property="Foreground" Value="{StaticResource Nocturne.Brush.AccentLight}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsAllowed}" Value="False">
+                        <Setter Property="TextDecorations" Value="Strikethrough" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </TextBlock.Style>
+              </TextBlock>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <ItemsControl ItemsSource="{Binding StatusBitChips}">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Border Margin="0,0,6,6"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="9,3">
+              <Border.Style>
+                <Style TargetType="Border">
+                  <Setter Property="Background" Value="{StaticResource Nocturne.Brush.Hover}" />
+                  <Setter Property="BorderBrush" Value="{StaticResource Nocturne.Brush.Ring}" />
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsActive}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource Nocturne.Brush.AccentTint}" />
+                      <Setter Property="BorderBrush" Value="{StaticResource Nocturne.Brush.Accent}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsAllowed}" Value="False">
+                      <Setter Property="Opacity" Value="0.3" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Border.Style>
+              <TextBlock FontSize="{StaticResource Nocturne.FontSize.Note}" Text="{Binding Label}">
+                <TextBlock.Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{StaticResource Nocturne.Brush.Text50}" />
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding IsActive}" Value="True">
+                        <Setter Property="Foreground" Value="{StaticResource Nocturne.Brush.AccentLight}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsAllowed}" Value="False">
+                        <Setter Property="TextDecorations" Value="Strikethrough" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </TextBlock.Style>
+              </TextBlock>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </StackPanel>
+
+    <!-- Activity -->
+    <StackPanel Margin="0,18,0,0">
+      <TextBlock controls:Tracking.Text="ACTIVITY" Style="{StaticResource Nocturne.Kicker}" />
+      <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding ActivityLog}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Border BorderBrush="{StaticResource Nocturne.Brush.Hairline06}"
+                    BorderThickness="0,0,0,1"
+                    Padding="0,6">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0"
+                           Margin="0,1,12,0"
+                           FontFamily="{StaticResource Nocturne.FontFamily.Mono}"
+                           FontSize="{StaticResource Nocturne.FontSize.Small}"
+                           Foreground="{StaticResource Nocturne.Brush.Text35}"
+                           Text="{Binding TimeText}" />
+                <TextBlock Grid.Column="1"
+                           FontSize="{StaticResource Nocturne.FontSize.Secondary}"
+                           Foreground="{StaticResource Nocturne.Brush.Text70}"
+                           Text="{Binding Text}"
+                           TextWrapping="Wrap" />
+              </Grid>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <TextBlock Margin="0,6,0,0"
+                 FontSize="{StaticResource Nocturne.FontSize.Note}"
+                 Foreground="{StaticResource Nocturne.Brush.Text35}"
+                 Text="No activity yet — play something in Apple Music.">
+        <TextBlock.Style>
+          <Style TargetType="TextBlock">
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding ActivityLog.Count}" Value="0">
+                <Setter Property="Visibility" Value="Visible" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </TextBlock.Style>
+      </TextBlock>
+    </StackPanel>
+
+  </StackPanel>
+</UserControl>

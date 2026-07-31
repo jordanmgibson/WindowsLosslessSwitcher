@@ -1,0 +1,54 @@
+<UserControl x:Class="WindowsLosslessSwitcher.Views.SettingsPages.NotificationsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <StackPanel>
+    <TextBlock FontSize="{StaticResource Nocturne.FontSize.Heading}"
+               FontWeight="Medium"
+               Text="Notifications" />
+
+    <Grid Margin="0,20,0,10">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <StackPanel Grid.Column="0">
+        <TextBlock FontSize="{StaticResource Nocturne.FontSize.Body}" Text="Popup when the format changes" />
+        <TextBlock Margin="0,2,0,0"
+                   FontSize="{StaticResource Nocturne.FontSize.Small}"
+                   Foreground="{StaticResource Nocturne.Brush.Text40}"
+                   Text="A small card in the bottom-right corner of the screen" />
+      </StackPanel>
+      <ToggleButton Grid.Column="1"
+                    Margin="12,0,0,0"
+                    VerticalAlignment="Center"
+                    IsChecked="{Binding EnableSwitchToasts}"
+                    Style="{StaticResource Nocturne.ToggleSwitch}" />
+    </Grid>
+
+    <Grid Margin="0,0,0,10">
+      <Grid.Style>
+        <Style TargetType="Grid">
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding EnableSwitchToasts}" Value="False">
+              <Setter Property="Opacity" Value="0.4" />
+              <Setter Property="IsEnabled" Value="False" />
+            </DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </Grid.Style>
+      <TextBlock VerticalAlignment="Center"
+                 FontSize="{StaticResource Nocturne.FontSize.Body}"
+                 Text="Include song, artist, and album" />
+      <ToggleButton HorizontalAlignment="Right"
+                    VerticalAlignment="Center"
+                    IsChecked="{Binding IncludeTrackMetadataInSwitchToasts}"
+                    Style="{StaticResource Nocturne.ToggleSwitch}" />
+    </Grid>
+
+    <TextBlock Margin="0,10,0,0"
+               FontSize="{StaticResource Nocturne.FontSize.Note}"
+               Foreground="{StaticResource Nocturne.Brush.Text40}"
+               Text="With song details on, the popup shows artwork and the track line; with them off, a minimal pill with just the new format appears."
+               TextWrapping="Wrap" />
+  </StackPanel>
+</UserControl>
