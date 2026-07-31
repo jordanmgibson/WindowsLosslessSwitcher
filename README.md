@@ -9,12 +9,12 @@ If the next song you play is a Hi-Res Lossless track at 192 kHz, the app switche
 The app lives in the system tray and stays out of the way. It is an independent Windows counterpart to [LosslessSwitcher](https://github.com/vincentneo/LosslessSwitcher) on macOS.
 
 <p align="center">
-  <img src="assets/switch-toast.png" width="320" alt="Toast popup announcing a switch to 24-bit / 44.1 kHz with the track's song, artist, and album">
+  <img src="assets/switch-toast.png" width="320" alt="Toast popup announcing a live switch from 24-bit / 192 kHz to 24-bit / 44.1 kHz with the playing track and device">
   &nbsp;&nbsp;
-  <img src="assets/tray-menu.png" width="380" alt="Tray menu showing the resolver status, current format, version, and update actions">
+  <img src="assets/tray-menu.png" width="345" alt="Tray flyout showing the playing track with artwork, the current format badge, status, version, and update actions">
 </p>
 <p align="center">
-  <img src="assets/main-window.png" width="380" alt="Settings window showing the detected formats for the active target device, switching options, and current status">
+  <img src="assets/main-window.png" width="380" alt="Main window showing the playing track's artwork, the applied 24-bit / 192 kHz format, the previous format, output device, and quick settings">
 </p>
 
 ## Features
