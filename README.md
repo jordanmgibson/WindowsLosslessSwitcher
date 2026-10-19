@@ -9,12 +9,10 @@ If the next song you play is a Hi-Res Lossless track at 192 kHz, the app switche
 The app lives in the system tray and stays out of the way. It is an independent Windows counterpart to [LosslessSwitcher](https://github.com/vincentneo/LosslessSwitcher) on macOS.
 
 <p align="center">
-  <img src="assets/switch-toast.png" width="320" alt="Toast popup announcing a live switch from 24-bit / 192 kHz to 24-bit / 44.1 kHz with the playing track and device">
-  &nbsp;&nbsp;
-  <img src="assets/tray-menu.png" width="345" alt="Tray flyout showing the playing track with artwork, the current format badge, status, version, and update actions">
+  <img src="assets/main-window.png" width="320" alt="Main window with the track format, output device, and quick settings">
 </p>
 <p align="center">
-  <img src="assets/main-window.png" width="380" alt="Main window showing the playing track's artwork, the applied 24-bit / 192 kHz format, the previous format, output device, and quick settings">
+  <img src="assets/settings-switching.png" width="640" alt="Switching settings with intro replay and per-recording native format corrections">
 </p>
 
 ## Features
@@ -22,12 +20,22 @@ The app lives in the system tray and stays out of the way. It is an independent 
 - Automatic sample-rate and optional bit-depth switching for Apple Music for Windows
 - Exact format matching against the Apple Music catalog; local files are matched to their actual file format
 - Follows the Windows default playback device, or pins a specific device
-- Mutes instantly on a track change so nothing plays at the old format, switches the device live under Apple Music's running audio stream, and unmutes once the rebuilt pipeline produces real audio — no pops, no wrong-format playback, no pause/resume games, and song endings play in full
+- Optional full-intro replay keeps pending preparation muted and restarts once the renderer is ready; known matching formats continue without muting or restarting
 - Verifies audio is actually flowing after every switch, with automatic recovery if Apple Music's player stalls
 - Optional popup toast when a new format is applied
 - Tray-first UI with current format display, diagnostics export, and update checks
 - Installer with in-app updates, or a portable package if you prefer no installer
 
+### Replaying an intro after a format change
+
+Under **Settings > Switching**, **Replay the intro after a format change** mutes pending preparation and restarts the same recording at 0:00 after a live device-format change. It defaults to on; turn it off to keep format lookup audible and retain the current timeline position. Immediately available matching formats are neither muted nor restarted. A first network lookup can still have a preparation gap with replay enabled. Format changes detected while paused wait until playback resumes.
+
+Apple Music can acknowledge a seek without moving. The restart confirms both recording identity and timeline position. If seeking is unavailable or ineffective, one Previous command is allowed only while the same recording is paused and at least five seconds in. If a safe restart cannot be confirmed, playback resumes at its current position. Radio/autoplay sessions may disable both commands. Muting starts when track metadata is detected; Windows can deliver that metadata after playback has already started.
+### Native format corrections
+
+The public Apple Music catalog can report a different format from the Windows player's Lossless details. In **Settings > Switching > Native format correction**, select the sample rate and bit depth shown by Apple Music, then choose **Save and apply**. The saved correction overrides catalog/cache results only for the matching title, artist, and album. **Remove correction** restores automatic resolution. This requires a user-verified format; the app does not inspect the native Apple Music stream.
+
+If catalog and local-file detection cannot determine the track's format, the device keeps its current format and the app displays **Undetermined**. An audio-quality preference alone does not establish a recording's sample rate. See [ISSUE_FIXES.md](ISSUE_FIXES.md) for reported-issue coverage and remaining validation.
 ## Installation
 
 1. Go to the [latest release](https://github.com/jordanmgibson/WindowsLosslessSwitcher/releases/latest).

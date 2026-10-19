@@ -12,6 +12,9 @@ public interface ITrackSource : IAsyncDisposable
     /// </summary>
     event EventHandler<TrackSnapshot>? TrackChanged;
 
+    /// <summary>Signals a resume even when the recording metadata has not changed.</summary>
+    event EventHandler? PlaybackResumed { add { } remove { } }
+
     /// <summary>
     /// Starts monitoring for track changes.
     /// </summary>

@@ -263,7 +263,8 @@ internal static class EndpointFormatSupport
         int maxAttempts,
         TimeSpan retryDelay,
         Func<DeviceFormatSnapshot> snapshotReader,
-        Action<TimeSpan> wait)
+        Action<TimeSpan> wait,
+        Func<int, TimeSpan>? retryDelayForAttempt = null)
     {
         DeviceFormatSnapshot snapshot = new(null, null);
 
@@ -295,7 +296,7 @@ internal static class EndpointFormatSupport
 
             if (attempt < maxAttempts)
             {
-                wait(retryDelay);
+                wait(retryDelayForAttempt?.Invoke(attempt) ?? retryDelay);
             }
         }
 

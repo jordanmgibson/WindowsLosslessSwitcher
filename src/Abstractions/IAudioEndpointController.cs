@@ -68,6 +68,13 @@ public interface IAudioEndpointController
     float? GetProcessSessionPeak(string deviceId, string processName);
 
     /// <summary>
+    /// Reads activity and peak together. Implementations can share one session enumeration;
+    /// the default preserves compatibility with other endpoint controllers.
+    /// </summary>
+    ProcessAudioSessionSnapshot GetProcessSessionSnapshot(string deviceId, string processName) =>
+        new(IsProcessSessionActive(deviceId, processName), GetProcessSessionPeak(deviceId, processName));
+
+    /// <summary>
     /// Returns whether the endpoint is currently muted, or null when the state cannot be read.
     /// </summary>
     bool? GetMasterMute(string deviceId);

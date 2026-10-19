@@ -2,6 +2,20 @@
 
 This document explains the internal architecture of Windows Lossless Switcher for contributors and maintainers.
 
+## UI verification
+
+After the Release build and regression tests, run the isolated WPF harness:
+
+```powershell
+dotnet run --project .\tests\WindowsLosslessSwitcher.UiVerification\WindowsLosslessSwitcher.UiVerification.csproj --configuration Release
+```
+
+It loads compiled application views without starting the app or its audio services,
+checks intro/correction bindings, layout bounds, focus resources, and appearance
+palettes, and writes PNG previews under `artifacts/ui-verification`. Preview data
+is synthetic. CI also runs this harness. See [UI_DESIGN.md](UI_DESIGN.md) for its
+scope and the remaining manual checks.
+
 ## Architecture Overview
 
 The app is a tray-first WPF application built on .NET 8. It uses no dependency injection container — all services are composed manually in `App.xaml.cs`. This keeps the startup graph explicit and traceable at a glance.
@@ -9,7 +23,7 @@ The app is a tray-first WPF application built on .NET 8. It uses no dependency i
 ```
 App.xaml.cs
  ├─ AppleMusicTrackSource       — watches Apple Music via Windows GSMTC APIs
- ├─ SwitchingCoordinator        — orchestrates the full mute → resolve → live switch → rebuild → restart cycle
+ ├─ SwitchingCoordinator        — orchestrates resolution → muted live switch → rebuild → optional intro replay
  │   ├─ ResolverChain           — runs resolvers in priority order until one succeeds
  │   │   ├─ FormatCacheResolver         — returns persisted catalog results before network lookup
  │   │   ├─ AppleMusicCatalogResolver   — queries Apple Music catalog for exact format
@@ -38,14 +52,14 @@ Two debounce mechanisms prevent spurious events:
 
 ### 2. Format resolution (`ResolverChain`)
 
-`ResolverChain` iterates resolvers in order, returning the first non-null result. `FormatCacheResolver` first checks the versioned, storefront-specific catalog cache. On a miss, the catalog resolver acts as the authoritative cloud-vs-local test: a confident catalog match (exact title and artist) means the track is an Apple Music catalog track and we use its exact manifest format. When the catalog does not confidently match — local-library files, or any track Apple Music can't identify — the chain falls through to `LocalDeviceMaxResolver`, which reads the actual format from the track's PlayCache file. This avoids a local file that merely shares metadata with a catalog track being forced to the cloud format, because only an exact title+artist match clears the catalog's acceptance threshold.
+`SwitchingCoordinator` first checks saved native format corrections for the normalized title, artist, and album. A matching valid correction bypasses the catalog/cache chain. Otherwise, `ResolverChain` iterates resolvers in order, returning the first non-null result. `FormatCacheResolver` first checks the versioned, storefront-specific catalog cache. On a miss, the catalog resolver acts as the authoritative cloud-vs-local test: a confident catalog match (exact title and artist) means the track is an Apple Music catalog track and we use its exact manifest format. When the catalog does not confidently match — local-library files, or any track Apple Music can't identify — the chain falls through to `LocalDeviceMaxResolver`, which reads the actual format from the track's PlayCache file. This avoids a local file that merely shares metadata with a catalog track being forced to the cloud format, because only an exact title+artist match clears the catalog's acceptance threshold.
 
 | Resolver | Strategy | Confidence |
 |---|---|---|
 | `FormatCacheResolver` | Returns a cached catalog result immediately. Entries are invalidated when catalog resolver semantics change and stale entries are verified in the background. | `Exact` |
 | `AppleMusicCatalogResolver` | Searches the Apple Music catalog API by track metadata, then fetches the HLS manifest for the best match to read `SAMPLE-RATE` and `BIT-DEPTH` attributes directly. Only a high-confidence match (exact title + exact artist) is accepted; weaker matches return `null` so the track is treated as local. | `Exact` |
 | `LocalDeviceMaxResolver` | Runs after the catalog. Locates the track's file in Apple Music's PlayCache via `PlayCacheTrackFormatReader` (TagLibSharp) and resolves to the file's true sample rate, with the best bit depth the device supports at that rate. Files are matched three ways, in confidence order: the in-progress download folder named after the track, the file Apple Music currently holds OPEN (replays of completed cache files), and a file written right at track start. When no file can be identified, it returns `null` and the chain falls through to the tier fallback — switching beyond the file's own rate gains nothing in shared mode, and the extreme device-max jumps it used to make (e.g. 24/48 → 24/384) destabilized Apple Music's renderer. | `Exact` |
-| `TierFallbackResolver` | Terminal safety net: derives a format from the user's Apple Music audio-quality preference (e.g. High-Res Lossless → 24/48). Applied like any other resolution, so the resolved and applied formats always match; because the fallback is constant, consecutive unidentified tracks are no-op switches. | `Tier` |
+| `TierFallbackResolver` | Terminal marker: the audio-quality preference does not determine a track's actual format. The coordinator retains the endpoint format and reports Undetermined; the legacy numeric fields are not applied or displayed as a detected rate. | `Tier` |
 
 ### 3. Format switching (`SwitchingCoordinator`)
 
@@ -54,49 +68,41 @@ Two debounce mechanisms prevent spurious events:
 ```
 TrackChanged event received
   │
-  ├─ Acquire switch lock
-  ├─ Mute the target endpoint immediately (milliseconds) — playback continues silently, so the
-  │   new track is never audible at the previous format while its render stream spins up
+  ├─ Acquire switch lock and transfer an inherited endpoint mute
   ├─ Select target device (default or pinned)
-  ├─ Resolve format via ResolverChain
-  ├─ Evaluate format against device capabilities
-  │   ├─ Already active? → unmute, return early without transport commands
-  │   └─ Not playing + endpoint silent? → apply the format directly (the next stream starts on it)
-  ├─ Gate: require Apple's media agent's render stream to be ACTIVE — and SUSTAINED for 1.5 s,
-  │   which the old track's dying stream cannot pass right after a track change
-  │   └─ Never sustains? → skip switch (a wedged/cold renderer never self-rebuilds — see below)
-  ├─ Apply the format LIVE, under the running stream (PolicyConfig / PropertyStore) — no pause
-  ├─ Poll until device reports the new format (up to 5 seconds)
-  ├─ Wait for the agent's stream rebuild: Windows invalidates the live stream, the agent notices
-  │   and rebuilds it on its own (~3–6 s) — confirmed by a REAL audio peak from the agent's own
-  │   session (Apple Music advances its SMTC timeline even when its renderer is dead, so only a
-  │   peak counts; session meters read upstream of the endpoint mute, so the device stays silent)
-  ├─ Realign the schedule: one muted pause/play on the healthy rebuilt stream. The timeline kept
-  │   advancing during the rebuild while audio did not, and Apple Music ends the track when the
-  │   TIMELINE finishes — without the realign, the rebuild duration is cut off the END of the
-  │   song. Resuming makes Apple Music restart rendering at the timeline position with a fresh
-  │   end-of-track schedule. (No format change happens across this pause, so the dormant-stream
-  │   invalidation trap does not apply.)
-  ├─ Unmute (the track plays on from the timeline position — deliberately NOT restarted from 0:00:
-  │   the extra transition a restart creates is the state a quick user skip wedges)
-  ├─ Rebuild unconfirmed? → recovery ladder: pause/play nudge(s) → skip-next (30 s cooldown) →
-  │   repeated failures within 3 min → restart Apple Music with a fresh media agent (10 min
-  │   cooldown, `RestartAppleMusicOnPlaybackFailure` setting)
-  └─ No-switch exits (format already active / switch skipped) run a playback health check, and a
-      continuous watchdog samples playback every 5 s between tracks: sustained "Playing with no
-      render stream" — Apple Music can wedge on its own during rapid track skips — triggers the
-      same recovery ladder
+  ├─ Intro replay on? → mute pending lookup; inspect synchronous results before muting
+  ├─ Resolve saved native correction, or use ResolverChain
+  ├─ Unknown rate? → retain the endpoint format and report Undetermined
+  ├─ Evaluate device capabilities; immediately known active formats need no mute or restart
+  ├─ Paused? → defer the device change until a Playing event or watchdog recheck
+  ├─ Require the media agent's render stream to remain active for 1.5 seconds
+  │   └─ Never sustains? → skip the device change and check playback health
+  ├─ Ensure the live device-format change is muted, preserving user-owned mute
+  ├─ Apply and verify the endpoint format; wait for real audio in the rebuilt stream
+  ├─ Realign with a short pause; optionally restart the same recording at 0:00
+  │   ├─ Confirm seek by identity and timeline position
+  │   └─ Previous fallback requires the same paused recording at ≥5 seconds
+  ├─ Unmute before Play; if no safe restart is confirmed, keep the current position
+  ├─ Rebuild unconfirmed? → existing bounded recovery and escalation ladder
+  └─ Between tracks, the watchdog detects stalled render streams and missed resumes
 ```
 
-Why the live switch matters: Apple Music renders audio through Apple's media agent process
-(`AMPLibraryAgent`), whose WASAPI session on the target device is the only reliable playback
-signal. Changing the shared-mode device format invalidates whatever stream exists — but the agent
-only *notices* and rebuilds when the stream is actively rendering at that moment. A stream
-invalidated while paused is silently reused on resume and never renders again — SMTC keeps
-reporting *Playing* while nothing plays ("zombie" playback). That is why the pipeline never
-pauses: it switches under a running stream and lets the agent rebuild itself. No pause gap also
-means Apple Music's internal end-of-track schedule stays intact, so song endings are never cut
-short.
+With intro replay on, preparation is muted before format resolution so the listener
+does not hear the opening and then a deliberate restart. With replay off, resolution
+and render-stream startup remain audible and only the actual device change is muted.
+`RewindAfterFormatSwitch` defaults to on; unchanged-format tracks and later watchdog
+recoveries keep their position. A successful rewind is limited to once per track
+generation. Cancellation transfers coordinator-owned pauses to the successor;
+shutdown releases them before disposing the media-command session.
+
+Following the default device queries that endpoint directly. Pinned selection still
+enumerates available devices and preserves the missing-device result.
+
+The format change still happens under a live renderer. Changing a dormant Apple
+media-agent stream can leave it silent on resume, so paused changes are deferred.
+The optional pause/restart occurs after the live switch and renderer rebuild.
+These checks depend on Windows GSMTC state and per-process audio-session metering;
+radio/autoplay sessions may disable both seeking and Previous.
 
 ### 4. Windows audio API (`CoreAudioEndpointController`)
 

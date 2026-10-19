@@ -19,7 +19,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     private const int PauseSilenceConsecutiveReads = 3;
 
     // How often to re-read the device format while waiting for it to stabilize after a switch.
-    private static readonly TimeSpan DeviceReadyPollInterval = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan DeviceReadyPollInterval = TimeSpan.FromMilliseconds(50);
 
     // How often to sample playback state and audio peak when confirming that output has resumed.
     private static readonly TimeSpan PlaybackRestorePollInterval = TimeSpan.FromMilliseconds(100);
@@ -52,6 +52,10 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     // the dead render stream before recreating it on the new device format.
     private static readonly TimeSpan PlaybackRecoveryNudgeDelay = TimeSpan.FromMilliseconds(400);
 
+    // A healthy rebuilt renderer only needs a brief transport settle. Recovery of a dead
+    // renderer retains the longer delay above.
+    private static readonly TimeSpan ScheduleRealignSettleDelay = TimeSpan.FromMilliseconds(100);
+
     // Re-observation window after each recovery nudge. Live testing showed Apple Music can take
     // a little over 2 s to rebuild its render stream after a high-rate (384 kHz) format switch,
     // so this matches the initial observation window rather than cutting recovery short.
@@ -62,7 +66,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     private const int ResumePlayAttemptLimit = 3;
 
     // Delay between resume attempts.
-    private static readonly TimeSpan ResumePlayRetryDelay = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan ResumePlayRetryDelay = TimeSpan.FromMilliseconds(100);
 
     // Apple Music renders audio through Apple's media agent process, which keeps its WASAPI
     // render stream RUNNING for ~5 s after a pause before stopping it. Changing the device
@@ -161,6 +165,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     // ~4 s (verified live for same- and cross-family switches); margin for slow local files.
     private static readonly TimeSpan StreamRebuildTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StreamRebuildPollInterval = TimeSpan.FromMilliseconds(150);
+    private static readonly TimeSpan FastPlaybackPollInterval = TimeSpan.FromMilliseconds(50);
 
 
     private readonly ITrackSource _trackSource;
@@ -179,7 +184,11 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     private readonly CancellationTokenSource _cacheVerificationLifetimeCts = new();
     private CancellationTokenSource? _currentTrackCts;
     private string? _currentTrackKey;
+    private TrackSnapshot? _deferredTrack;
     private long _currentTrackGeneration;
+    // Accessed under _switchLock. Never accept a rewind more than once per track generation,
+    // even when a successful seek is followed by a failed play/recovery cycle.
+    private long _introRewoundGeneration = -1;
     private bool _cacheVerificationStopping;
 
     // Device muted by the coordinator to silence pre-switch playback. Ownership transfers to a
@@ -264,6 +273,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         Settings = settings;
         PublishStatus(new SwitchingStatus("Resolver: Waiting for Apple Music", null, null, null, null, null));
         _trackSource.TrackChanged += OnTrackChanged;
+        _trackSource.PlaybackResumed += OnPlaybackResumed;
         await _trackSource.StartAsync(cancellationToken);
 
         _watchdogCts = new CancellationTokenSource();
@@ -360,9 +370,13 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         Settings = settings;
     }
 
+    /// <summary>Re-evaluates the current track after a native-format correction is saved.</summary>
+    public void ReprocessTrack(TrackSnapshot track) => OnTrackChanged(this, track);
+
     public async ValueTask DisposeAsync()
     {
         _trackSource.TrackChanged -= OnTrackChanged;
+        _trackSource.PlaybackResumed -= OnPlaybackResumed;
         Task[] cacheVerificationTasks;
         lock (_cacheVerificationSync)
         {
@@ -373,7 +387,6 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         _cacheVerificationLifetimeCts.Cancel();
         _watchdogCts?.Cancel();
         CancelCurrentTrackProcessing();
-        await _trackSource.DisposeAsync();
         await AwaitActiveTrackTasksAsync();
         await AwaitCacheVerificationTasksAsync(cacheVerificationTasks);
         if (_watchdogTask is not null)
@@ -388,6 +401,13 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             }
         }
 
+        // Keep the command session alive until owned pauses (including watchdog pauses) have
+        // been released. Disposing the source first makes shutdown-time resume impossible.
+        if (_transportPausedByCoordinator)
+        {
+            await ResumePlaybackAfterPauseAsync(null, CancellationToken.None);
+        }
+        await _trackSource.DisposeAsync();
         _watchdogCts?.Dispose();
         _cacheVerificationLifetimeCts.Dispose();
 
@@ -415,6 +435,13 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 }
 
                 var deviceId = _lastTargetDeviceId;
+                // Fallback if a native playback event was lost during a fast pause/resume.
+                if (Volatile.Read(ref _deferredTrack) is not null && _mediaTransportController.GetPlaybackState().IsPlaying)
+                {
+                    OnPlaybackResumed(this, EventArgs.Empty);
+                    inactiveSince = null;
+                    continue;
+                }
                 if (deviceId is null)
                 {
                     continue;
@@ -491,7 +518,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             // Music cannot play, and must stay off the restart-escalation path.
             var recovered = await TryRecoverPlaybackWithNudgesAsync(
                 deviceId, null, generation, null, null, null, correlation, linked.Token,
-                NoSwitchRecoveryNudgeLimit, switchApplied: Volatile.Read(ref _currentTrackSwitchApplied));
+                NoSwitchRecoveryNudgeLimit, switchApplied: Volatile.Read(ref _currentTrackSwitchApplied), rewindIntro: false);
             if (recovered)
             {
                 _logger.Info("Watchdog: playback recovered.", correlation);
@@ -518,6 +545,13 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         {
             return _activeTrackTasks.Count > 0;
         }
+    }
+
+    private void OnPlaybackResumed(object? sender, EventArgs args)
+    {
+        var pending = Interlocked.Exchange(ref _deferredTrack, null);
+        if (pending is not null && pending.UniqueKey == _currentTrackKey)
+            OnTrackChanged(this, pending);
     }
 
     private async void OnTrackChanged(object? sender, TrackSnapshot track)
@@ -567,13 +601,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             _logger.Info($"Processing track {track.UniqueKey} detected at {track.DetectedAtUtc:O}.", correlation);
 
-            // Silence the new track immediately — before the (slow) format resolution — so it
-            // never plays audibly at the previous track's format. We MUTE rather than pause:
-            // muting is silent but lets Apple Music's render stream finish starting up, which is
-            // required for a clean format switch later. The pause + drain happens at the switch
-            // point once the stream is established.
             stage = TrackProcessingStage.TrackChangePause;
-            MuteOnTrackChange(track, generation, correlation);
             if (_transportPausedByCoordinator)
             {
                 pausedPlayback = true;
@@ -582,9 +610,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
             _logger.Info("Starting target-device selection.", correlation);
             var targetSelectionStopwatch = Stopwatch.StartNew();
-            var devices = _audioEndpointController.GetRenderDevices();
-            var defaultDevice = _audioEndpointController.GetDefaultRenderDevice();
-            var targetDevice = DeviceTargetingPolicy.SelectTargetDevice(Settings, devices, defaultDevice);
+            var targetDevice = GetCurrentTargetDevice();
             _logger.Info(
                 $"Target-device selection completed after {targetSelectionStopwatch.ElapsedMilliseconds} ms. " +
                 $"result={(targetDevice?.FriendlyName ?? "none")}.",
@@ -605,17 +631,26 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
             targetDeviceName = targetDevice.FriendlyName;
             _lastTargetDeviceId = targetDevice.Id;
-            if (_mutedDeviceId is not null && !string.Equals(_mutedDeviceId, targetDevice.Id, StringComparison.Ordinal))
+            // Keep pending intro preparation silent through the confirmed restart;
+            // otherwise the listener hears the opening twice. Keep an inherited mute on the
+            // same endpoint, but release it when the target changes or replay is disabled.
+            var protectIntro = Settings.RewindAfterFormatSwitch &&
+                (pausedPlayback || _mediaTransportController.GetPlaybackState().IsPlaying);
+            if (!protectIntro || !string.Equals(_mutedDeviceId, targetDevice.Id, StringComparison.Ordinal))
             {
-                // The cached device we muted is no longer the target (device changed since the
-                // last switch). Move the mute to the real target.
                 UnmuteTargetDeviceAfterProcessing(correlation);
-                MuteTargetDeviceForProcessing(targetDevice.Id, correlation);
             }
-
             PublishStatusIfCurrent(generation, new SwitchingStatus("Resolver: Resolving format", targetDevice.FriendlyName, track, null, null, null));
             stage = TrackProcessingStage.ResolvingFormat;
-            var resolved = await ResolveFormatAsync(track, cancellationToken);
+            var resolution = ResolveFormatAsync(track, cancellationToken);
+            // Cache hits and native corrections complete synchronously: inspect them before
+            // muting so a known matching format has no artificial gap (issue #2). Keep pending
+            // lookups silent in intro-replay mode, as requested, until their result is known.
+            if (protectIntro && !resolution.IsCompletedSuccessfully)
+            {
+                MuteTargetDeviceForProcessing(targetDevice.Id, correlation);
+            }
+            var resolved = await resolution;
             if (resolved?.Source == AudioFormatSource.CachedCatalog)
             {
                 MaybeScheduleCacheVerification(track, resolved);
@@ -635,6 +670,22 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            if (resolved.Source == AudioFormatSource.TierFallback || resolved.Confidence != ResolutionConfidence.Exact)
+            {
+                // A quality preference is a ceiling, not a measurement of this recording.
+                // Guessing 44.1/48 kHz caused false rate changes and album oscillation (#3/#4).
+                (resumeAttempted, _) = await ResumeIfNeededAsync(pausedPlayback, resumeAttempted,
+                    targetDevice.FriendlyName, null, cancellationToken);
+                UnmuteTargetDeviceAfterProcessing(correlation);
+                var currentFormat = _audioEndpointController.GetCurrentDeviceFormat(targetDevice.Id);
+                var health = await VerifyPlaybackHealthAfterNoSwitchAsync(targetDevice.Id,
+                    targetDevice.FriendlyName, generation, track, resolved, currentFormat, correlation, cancellationToken);
+                resumeAttempted = resumeAttempted || health != PlaybackHealthOutcome.Healthy;
+                PublishStatusIfCurrent(generation, new SwitchingStatus("Resolver: Rate undetermined",
+                    targetDevice.FriendlyName, track, resolved, currentFormat,
+                    AppendHealthNote("Track rate is undetermined; keeping the current device format. Use a native format correction if needed.", health)));
+                return;
+            }
             var decision = EvaluateResolvedFormat(targetDevice, resolved);
             if (decision.SelectedFormat is null)
             {
@@ -650,6 +701,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                     targetDevice.FriendlyName,
                     failureReason,
                     CancellationToken.None);
+                UnmuteTargetDeviceAfterProcessing(correlation);
                 var skipHealth = await VerifyPlaybackHealthAfterNoSwitchAsync(
                     targetDevice.Id, targetDevice.FriendlyName, generation, track, resolved, decision.CurrentDeviceFormat, correlation, cancellationToken);
                 resumeAttempted = resumeAttempted || skipHealth != PlaybackHealthOutcome.Healthy;
@@ -667,11 +719,40 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                     targetDevice.FriendlyName,
                     activeFormatNote,
                     cancellationToken);
+                UnmuteTargetDeviceAfterProcessing(correlation);
                 var activeHealth = await VerifyPlaybackHealthAfterNoSwitchAsync(
                     targetDevice.Id, targetDevice.FriendlyName, generation, track, resolved, decision.CurrentDeviceFormat, correlation, cancellationToken);
                 resumeAttempted = resumeAttempted || activeHealth != PlaybackHealthOutcome.Healthy;
                 activeFormatNote = AppendHealthNote(activeFormatNote, activeHealth);
                 PublishStatusIfCurrent(generation, new SwitchingStatus($"Resolver: {resolved!.Source}", targetDevice.FriendlyName, track, resolved, decision.CurrentDeviceFormat, activeFormatNote));
+                return;
+            }
+
+            if (protectIntro)
+            {
+                MuteTargetDeviceForProcessing(targetDevice.Id, correlation);
+            }
+
+            if (pausedPlayback)
+            {
+                // A successor may inherit our pause. Start its renderer without leaking a
+                // preview at the old format while the intro replay is still being prepared.
+                var resumed = protectIntro
+                    ? await TryPlayWithRetriesAsync(cancellationToken)
+                    : await ResumePlaybackAfterPauseAsync(targetDeviceName, cancellationToken);
+                resumeAttempted = true;
+                pausedPlayback = !resumed;
+                if (!resumed) return;
+            }
+
+            if (!_mediaTransportController.GetPlaybackState().IsPlaying)
+            {
+                // A paused Apple stream can still own the old format. Changing it here makes
+                // that dormant stream unusable on resume. Re-evaluate on Playing instead.
+                Volatile.Write(ref _deferredTrack, track);
+                _logger.Info("Playback paused; deferring the format change until playback resumes.", correlation);
+                PublishStatusIfCurrent(generation, new SwitchingStatus("Resolver: Deferred until playback", targetDeviceName,
+                    track, resolved, decision.CurrentDeviceFormat, "Format change will apply when playback resumes."));
                 return;
             }
 
@@ -682,8 +763,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             // a stream invalidated while dormant is silently reused on resume and never renders.
             // So the only requirement before switching live is a genuinely active stream; if it
             // never comes up, SKIP the switch — a track playing at a slightly-wrong rate is far
-            // better than a silent zombie. Genuinely idle playback switches directly (a stream
-            // created later starts on the new format and needs no rebuild).
+            // better than a silent zombie. Paused playback defers the change until resume.
             stage = TrackProcessingStage.PauseBeforeSwitch;
             var liveStream = false;
             if (!pausedPlayback && _mediaTransportController.GetPlaybackState().IsPlaying)
@@ -721,6 +801,14 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                     correlation);
             }
 
+            if (!_mediaTransportController.GetPlaybackState().IsPlaying)
+            {
+                Volatile.Write(ref _deferredTrack, track);
+                PublishStatusIfCurrent(generation, new SwitchingStatus("Resolver: Deferred until playback", targetDeviceName,
+                    track, resolved, decision.CurrentDeviceFormat, "Format change will apply when playback resumes."));
+                return;
+            }
+
             if (TryCapturePlaybackProbe(targetDevice.Id) is { } applyProbe)
             {
                 _logger.Verbose($"Intro-trace: about to apply format; liveStream={liveStream}; {applyProbe}.", correlation);
@@ -732,6 +820,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 $"deviceFormatBefore={(decision.CurrentDeviceFormat?.DisplayName ?? "unknown")}, mixFormatBefore={(decision.CurrentMixFormat?.DisplayName ?? "unknown")}.");
             PublishStatusIfCurrent(generation, new SwitchingStatus("Switching: Applying format", targetDevice.FriendlyName, track, resolved, null, null));
 
+            // Without intro replay, leave lookup/startup audible and mute only the device change.
+            if (liveStream) MuteTargetDeviceForProcessing(targetDevice.Id, correlation);
             if (!_audioEndpointController.TryApplyFormat(targetDevice.Id, decision.SelectedFormat, out var verifiedDeviceFormat, out var failure))
             {
                 var diagnostics = _audioEndpointController.GetLastApplyDiagnostics(targetDevice.Id);
@@ -768,15 +858,9 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 var rebuilt = await ObserveStreamRebuildAsync(targetDevice.Id, generation, targetDevice.FriendlyName, track, resolved, verifiedDeviceFormat, correlation, cancellationToken);
                 if (rebuilt)
                 {
-                    // Realign audio with the timeline. The timeline kept advancing while the
-                    // stream rebuilt, so the audio now lags it by the rebuild duration and Apple
-                    // Music ends the track when the TIMELINE finishes — cutting that many seconds
-                    // off the end of the song. A single muted pause/play on the healthy rebuilt
-                    // stream makes Apple Music resume at the timeline position with a fresh
-                    // end-of-track schedule. (No format change happens across this pause, so the
-                    // invalidated-while-dormant zombie trap does not apply; unlike the track
-                    // restart this is not a transition, so a quick user skip cannot wedge it.)
-                    rebuilt = await TryRealignScheduleAfterRebuildAsync(targetDevice.Id, correlation, cancellationToken);
+                    // Realign only after the live renderer is healthy. The optional seek
+                    // recovers the muted intro after confirming the same recording can restart safely.
+                    rebuilt = await TryRealignScheduleAfterRebuildAsync(targetDevice.Id, generation, correlation, cancellationToken);
                 }
 
                 if (!rebuilt)
@@ -788,11 +872,6 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
                 if (rebuilt)
                 {
-                    // Do NOT restart the track to recover the muted intro: the skip-previous
-                    // re-buffers the track and creates a second transition, and a user skip
-                    // landing inside that window reliably wedges Apple Music's renderer
-                    // (proven live — every wedge cascade followed a restart + quick skip).
-                    // Losing a few muted seconds of intro is far cheaper than a wedge.
                     PublishStatusIfCurrent(generation, new SwitchingStatus("Switching: Playback restored", targetDevice.FriendlyName, track, resolved, verifiedDeviceFormat, completionNote, WasFormatChanged: true));
                     return;
                 }
@@ -816,7 +895,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         {
             _logger.Info($"Track processing canceled during {DescribeStage(stage)}.", correlation);
             var superseded = Volatile.Read(ref _currentTrackGeneration) != generation;
-            if (pausedPlayback && !resumeAttempted)
+            if (_transportPausedByCoordinator || (pausedPlayback && !resumeAttempted))
             {
                 if (superseded)
                 {
@@ -833,7 +912,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            if (pausedPlayback && !resumeAttempted)
+            if (_transportPausedByCoordinator || (pausedPlayback && !resumeAttempted))
             {
                 await ResumePlaybackAfterPauseAsync(targetDeviceName, CancellationToken.None);
             }
@@ -914,30 +993,6 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     
 
 
-    private void MuteOnTrackChange(TrackSnapshot track, long generation, DiagnosticsLogger.LogCorrelation correlation)
-    {
-        var state = _mediaTransportController.GetPlaybackState();
-        if (!state.IsPlaying)
-        {
-            return;
-        }
-
-        // Mute (do NOT pause) the instant a track change is detected. The mute is silent and
-        // near-instant, so the new track is inaudible at the previous format — but Apple Music
-        // keeps playing, which lets its render stream fully spin up. Pausing here instead would
-        // kill the stream before it activates; switching the format into that cold-start state
-        // is what produces zombie playback (proven live: a switch after a 1 ms "release" zombies,
-        // a switch after the stream actually drained recovers). The real pause + drain happens
-        // later, at the switch point, once the stream is established.
-        MuteTargetDeviceForProcessing(_lastTargetDeviceId, correlation);
-        if (TryCapturePlaybackProbe(_lastTargetDeviceId, state) is { } muteProbe)
-        {
-            _logger.Verbose($"Intro-trace: muted on track change; {muteProbe}.", correlation);
-        }
-
-        PublishStatusIfCurrent(generation, new SwitchingStatus("Switching: Preparing", null, track, null, null, null));
-    }
-
     // Diagnostic snapshot of "where the timeline is" vs "is the agent actually outputting audio",
     // tagged "Intro-trace" so a log can be followed step-by-step through the switch/rebuild/realign.
     // The lost-intro symptom reproduces only on some machines, so this captures whether (and where)
@@ -968,22 +1023,21 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
-        var deadline = DateTimeOffset.UtcNow + RenderStreamStartupTimeout + SustainedStreamActiveDuration;
-        var activeSince = default(DateTimeOffset?);
+        var activeSince = default(TimeSpan?);
 
-        while (DateTimeOffset.UtcNow < deadline)
+        while (stopwatch.Elapsed < RenderStreamStartupTimeout + SustainedStreamActiveDuration)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var active = _audioEndpointController.IsProcessSessionActive(deviceId, AppleMediaAgentProcessName);
             if (active == true)
             {
-                activeSince ??= DateTimeOffset.UtcNow;
-                if (DateTimeOffset.UtcNow - activeSince >= SustainedStreamActiveDuration)
+                activeSince ??= stopwatch.Elapsed;
+                if (stopwatch.Elapsed - activeSince >= SustainedStreamActiveDuration)
                 {
                     // Sustained activity proves this is the NEW track's stream: the old track's
                     // dying stream stops within ~1 s of the track change and cannot pass this.
-                    _logger.Info($"Render stream active and sustained after {stopwatch.ElapsedMilliseconds} ms; proceeding to pause + switch.", correlation);
+                    _logger.Info($"Render stream active and sustained after {stopwatch.ElapsedMilliseconds} ms; proceeding to live switch.", correlation);
                     return true;
                 }
             }
@@ -1001,7 +1055,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         }
 
         _logger.Warn(
-            $"Render stream did not sustain activity within {RenderStreamStartupTimeout.TotalSeconds:0} s; proceeding anyway (may still be loading).",
+            $"Render stream did not sustain activity within {(RenderStreamStartupTimeout + SustainedStreamActiveDuration).TotalSeconds:0.#} s; skipping the live switch.",
             correlation);
         return false;
     }
@@ -1117,11 +1171,11 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         AudioFormatCandidate? initialFormat,
         CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(FormatSwitchPauseTimeoutSeconds);
+        var stopwatch = Stopwatch.StartNew();
         var consecutiveMatches = initialFormat == targetFormat ? 1 : 0;
         var lastObservedFormat = initialFormat;
 
-        while (DateTimeOffset.UtcNow < deadline)
+        while (stopwatch.Elapsed < TimeSpan.FromSeconds(FormatSwitchPauseTimeoutSeconds))
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(DeviceReadyPollInterval, cancellationToken);
@@ -1148,6 +1202,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
     private async Task<bool> ResumePlaybackAfterPauseAsync(string? targetDeviceName, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         // Unmute before issuing play so resumed audio is audible immediately and the
         // restore-observation peak meter sees real output.
         UnmuteTargetDeviceAfterProcessing();
@@ -1218,9 +1273,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     {
         PublishStatusIfCurrent(generation, new SwitchingStatus("Switching: Rebuilding audio pipeline", targetDeviceName, track, resolved, verifiedDeviceFormat, null));
         var stopwatch = Stopwatch.StartNew();
-        var deadline = DateTimeOffset.UtcNow + StreamRebuildTimeout;
 
-        while (DateTimeOffset.UtcNow < deadline)
+        while (stopwatch.Elapsed < StreamRebuildTimeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -1232,17 +1286,18 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 return true;
             }
 
-            var active = _audioEndpointController.IsProcessSessionActive(deviceId, AppleMediaAgentProcessName);
+            var session = _audioEndpointController.GetProcessSessionSnapshot(deviceId, AppleMediaAgentProcessName);
             // The agent's own session peak, NOT the endpoint master meter: other applications'
             // audio on the same device would otherwise confirm a rebuild that never happened.
-            var peak = _audioEndpointController.GetProcessSessionPeak(deviceId, AppleMediaAgentProcessName) ?? 0f;
-            if (active == true && peak > PlaybackRestorePeakThreshold)
+            var peak = session.Peak ?? 0f;
+            if (session.IsActive == true && peak > PlaybackRestorePeakThreshold)
             {
                 _logger.Info($"Render stream rebuilt with audio {stopwatch.ElapsedMilliseconds} ms after the live format change; timeline={(state.TimelinePosition?.ToString() ?? "n/a")}, agentPeak={peak:F6}.", correlation);
                 return true;
             }
 
-            await Task.Delay(StreamRebuildPollInterval, cancellationToken);
+            await Task.Delay(stopwatch.Elapsed < TimeSpan.FromSeconds(1)
+                ? FastPlaybackPollInterval : StreamRebuildPollInterval, cancellationToken);
         }
 
         _logger.Warn($"Render stream did not rebuild within {StreamRebuildTimeout.TotalSeconds:0} s of the live format change.", correlation);
@@ -1252,6 +1307,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
     private async Task<bool> TryRealignScheduleAfterRebuildAsync(
         string deviceId,
+        long generation,
         DiagnosticsLogger.LogCorrelation correlation,
         CancellationToken cancellationToken)
     {
@@ -1266,6 +1322,20 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             // The user paused meanwhile — never play over them. Their next resume realigns
             // the schedule on its own.
             return true;
+        }
+
+        // Apple's Previous command restarts only after a few seconds. Keep the rebuilt stream
+        // running (muted) until a safe position, then pause and restart the same recording.
+        if (Settings.RewindAfterFormatSwitch && _mediaTransportController.MinimumRestartPosition > TimeSpan.Zero)
+        {
+            var ready = Stopwatch.StartNew();
+            while (state.IsPlaying && state.TimelinePosition is { } position &&
+                   position < _mediaTransportController.MinimumRestartPosition && ready.Elapsed < TimeSpan.FromSeconds(6))
+            {
+                await Task.Delay(FastPlaybackPollInterval, cancellationToken);
+                state = _mediaTransportController.GetPlaybackState();
+            }
+            if (!state.IsPlaying) return true;
         }
 
         // Captured before the pause: the probe enumerates COM audio sessions and must not sit
@@ -1285,8 +1355,11 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             _logger.Verbose($"Intro-trace: realign pausing; probed before the pause: {pauseProbe}.", correlation);
         }
 
-        await Task.Delay(PlaybackRecoveryNudgeDelay, cancellationToken);
-        var resumed = await TryPlayWithRetriesAsync(cancellationToken);
+        await Task.Delay(ScheduleRealignSettleDelay, cancellationToken);
+        await TryRewindIntroAsync(generation, correlation, cancellationToken);
+        // Unmute BEFORE play. Waiting for a post-play peak while muted consumes the intro
+        // again, particularly with a slow/quiet opening.
+        var resumed = await ResumePlaybackAfterPauseAsync(null, cancellationToken);
         if (!resumed)
         {
             _logger.Warn("Schedule realign play failed; running recovery.", correlation);
@@ -1301,7 +1374,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         var restored = await ObservePlaybackRestoredAsync(deviceId, PlaybackRestoreObservationWindow, cancellationToken);
         _logger.Info(
             restored
-                ? "Schedule realigned after the rebuild: audio resumed at the timeline position with a fresh end-of-track schedule."
+                ? "Schedule realigned after the rebuild; playback resumed audibly."
                 : "Schedule realign could not confirm audio; running recovery.",
             correlation);
         return restored;
@@ -1309,20 +1382,27 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
     private async Task<bool> ObservePlaybackRestoredAsync(string deviceId, TimeSpan observationWindow, CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + observationWindow;
+        var stopwatch = Stopwatch.StartNew();
         var baselinePosition = default(TimeSpan?);
         var sawPeak = false;
         var maxPeakValue = 0f;
         var lastPlaybackStatus = MediaTransportPlaybackStatus.Unknown;
         var lastTimelinePosition = default(TimeSpan?);
 
-        while (DateTimeOffset.UtcNow < deadline)
+        while (stopwatch.Elapsed < observationWindow)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var playbackState = _mediaTransportController.GetPlaybackState();
             lastPlaybackStatus = playbackState.PlaybackStatus;
             lastTimelinePosition = playbackState.TimelinePosition;
+
+            if (!_transportPausedByCoordinator && playbackState.PlaybackStatus is
+                MediaTransportPlaybackStatus.Paused or MediaTransportPlaybackStatus.Stopped or MediaTransportPlaybackStatus.Closed)
+            {
+                _logger.Info("Playback was paused or stopped during restore observation; leaving it to the user.");
+                return true;
+            }
 
             if (baselinePosition is null && playbackState.TimelinePosition is not null)
             {
@@ -1359,7 +1439,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 return true;
             }
 
-            await Task.Delay(PlaybackRestorePollInterval, cancellationToken);
+            await Task.Delay(stopwatch.Elapsed < TimeSpan.FromSeconds(1)
+                ? FastPlaybackPollInterval : PlaybackRestorePollInterval, cancellationToken);
         }
 
         _logger.Warn(
@@ -1367,6 +1448,30 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             $"lastStatus={lastPlaybackStatus}, sawPeak={sawPeak} (maxPeak={maxPeakValue:F6}), " +
             $"baselinePosition={baselinePosition}, lastTimelinePosition={lastTimelinePosition}.");
         return false;
+    }
+
+    private async Task TryRewindIntroAsync(
+        long generation,
+        DiagnosticsLogger.LogCorrelation correlation,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!Settings.RewindAfterFormatSwitch ||
+            generation != Volatile.Read(ref _currentTrackGeneration) ||
+            _introRewoundGeneration == generation)
+        {
+            return;
+        }
+
+        var accepted = await _mediaTransportController.TryRestartCurrentTrackAsync(_currentTrackKey ?? string.Empty, cancellationToken);
+        if (accepted)
+        {
+            _introRewoundGeneration = generation;
+        }
+        _logger.Info(accepted
+            ? "Confirmed restart at 0:00 after the format switch; unmuting before playback."
+            : "Could not confirm a safe intro restart; resuming at the current position.", correlation);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private async Task<bool> TryRecoverPlaybackWithNudgesAsync(
@@ -1379,7 +1484,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         DiagnosticsLogger.LogCorrelation correlation,
         CancellationToken cancellationToken,
         int maxNudges = MaxPlaybackRecoveryNudges,
-        bool switchApplied = true)
+        bool switchApplied = true,
+        bool rewindIntro = true)
     {
         for (var nudge = 1; nudge <= maxNudges; nudge++)
         {
@@ -1395,12 +1501,18 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             // A failed pause here is expected when GSMTC has already fallen back to Paused
             // (IsPauseEnabled goes false); the follow-up play is still worth attempting.
             var paused = await _mediaTransportController.TryPauseAsync(cancellationToken);
+            _transportPausedByCoordinator |= paused;
             if (!paused)
             {
                 _logger.Info($"Recovery nudge {nudge}/{maxNudges}: pause command was rejected; continuing with play.", correlation);
             }
 
             await Task.Delay(PlaybackRecoveryNudgeDelay, cancellationToken);
+
+            if (paused && switchApplied && rewindIntro && Settings.RewindAfterFormatSwitch)
+            {
+                await TryRewindIntroAsync(generation, correlation, cancellationToken);
+            }
 
             if (nudge == maxNudges)
             {
@@ -1409,13 +1521,18 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
                 // Apple Music to rebuild its playback pipeline (a track change always recovers
                 // it; a seek is the closest non-destructive equivalent). The timeline is frozen
                 // in this state, so seeking to the current position loses nothing.
+                // A post-switch intro rewind already supplied the timeline operation. Avoid
+                // issuing a second seek (which can buffer the track again).
                 var seekPosition = _mediaTransportController.GetPlaybackState().TimelinePosition ?? TimeSpan.Zero;
-                var seeked = await _mediaTransportController.TryChangePlaybackPositionAsync(seekPosition, cancellationToken);
-                _logger.Info(
-                    seeked
-                        ? $"Recovery nudge {nudge}/{maxNudges}: seeked to {seekPosition} to force a playback pipeline rebuild."
-                        : $"Recovery nudge {nudge}/{maxNudges}: seek to {seekPosition} was rejected; continuing with play.",
-                    correlation);
+                if (_introRewoundGeneration != generation || !rewindIntro)
+                {
+                    var seeked = await _mediaTransportController.TryChangePlaybackPositionAsync(seekPosition, cancellationToken);
+                    _logger.Info(
+                        seeked
+                            ? $"Recovery nudge {nudge}/{maxNudges}: seeked to {seekPosition} to force a playback pipeline rebuild."
+                            : $"Recovery nudge {nudge}/{maxNudges}: seek to {seekPosition} was rejected; continuing with play.",
+                        correlation);
+                }
             }
 
             var resumed = await ResumePlaybackAfterPauseAsync(targetDeviceName, cancellationToken);
@@ -1672,6 +1789,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
             _currentTrackCts = new CancellationTokenSource();
             _currentTrackKey = track.UniqueKey;
+            Volatile.Write(ref _deferredTrack, null);
             Volatile.Write(ref _suppressWatchdogUntilNextTrack, false);
             Volatile.Write(ref _currentTrackSwitchApplied, false);
             Volatile.Write(ref _patientRetryUsedForTrack, false);
@@ -1748,8 +1866,17 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
         PublishStatus(status);
     }
 
-    private Task<ResolvedAudioFormat?> ResolveFormatAsync(TrackSnapshot track, CancellationToken cancellationToken) =>
-        _resolverChain.ResolveAsync(track, cancellationToken);
+    private Task<ResolvedAudioFormat?> ResolveFormatAsync(TrackSnapshot track, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var correction = TrackFormatCorrection.Resolve(Settings.TrackFormatCorrections, track);
+        if (correction is not null)
+        {
+            _logger.Info($"Using user-verified native format for '{track.Title}': {correction.BitDepth}/{correction.SampleRateHz}; bypassing the web catalog/cache.");
+            return Task.FromResult<ResolvedAudioFormat?>(correction);
+        }
+        return _resolverChain.ResolveAsync(track, cancellationToken);
+    }
 
     private void MaybeScheduleCacheVerification(TrackSnapshot track, ResolvedAudioFormat resolved)
     {
@@ -1839,8 +1966,14 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
 
     private AudioDeviceInfo? GetCurrentTargetDevice()
     {
+        if (Settings.DeviceSelectionMode == DeviceSelectionMode.FollowDefault)
+        {
+            return _audioEndpointController.GetDefaultRenderDevice();
+        }
+
         var devices = _audioEndpointController.GetRenderDevices();
-        var defaultDevice = _audioEndpointController.GetDefaultRenderDevice();
+        var defaultDevice = devices.FirstOrDefault(device => device.IsDefault)
+            ?? _audioEndpointController.GetDefaultRenderDevice();
         return DeviceTargetingPolicy.SelectTargetDevice(Settings, devices, defaultDevice);
     }
 
@@ -1861,12 +1994,8 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
             $"deviceFormat={(currentDeviceFormat?.DisplayName ?? "unknown")}, mixFormat={(currentMixFormat?.DisplayName ?? "unknown")}, " +
             $"supported={(supportedFormatDescriptions.Count == 0 ? "none" : string.Join(", ", supportedFormatDescriptions))}.");
 
-        // Tier-fallback results apply like any other resolution: the value derives from the
-        // user's Apple Music quality setting, the live switch makes low-confidence changes
-        // safe, and a constant fallback means consecutive unidentified tracks are no-ops.
-        // (The old "never switch on tier fallback" rule guarded the pause/drain pipeline,
-        // where a wrong switch could zombie playback — obsolete since the live-switch
-        // redesign, and it left the resolved and applied formats visibly mismatched.)
+        // Only measured/catalog-resolved formats reach selection. Undetermined quality-tier
+        // markers are handled earlier and never force the endpoint to a guessed rate.
         var selectedFormat = FormatSelectionPolicy.SelectBest(
             resolved,
             currentDeviceFormat,

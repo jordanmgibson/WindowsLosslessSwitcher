@@ -4,6 +4,7 @@ using System.Windows.Threading;
 using WindowsLosslessSwitcher.Abstractions;
 using WindowsLosslessSwitcher.Services;
 using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
 
 namespace WindowsLosslessSwitcher.Controls;
 
@@ -18,8 +19,24 @@ namespace WindowsLosslessSwitcher.Controls;
 public sealed class MiniSpectrograph : FrameworkElement
 {
     private static readonly float[] IdleBars = [0.35f, 0.75f, 0.5f, 0.95f, 0.55f, 0.3f];
-    private static readonly Brush BarBrush = CreateFrozen(0xFF, 0x91, 0x84, 0xD9);
-    private static readonly Brush TipBrush = CreateFrozen(0xFF, 0xD2, 0xCE, 0xFD);
+    public static readonly DependencyProperty BarBrushProperty = DependencyProperty.Register(
+        nameof(BarBrush), typeof(Brush), typeof(MiniSpectrograph),
+        new FrameworkPropertyMetadata(Brushes.Gray, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty TipBrushProperty = DependencyProperty.Register(
+        nameof(TipBrush), typeof(Brush), typeof(MiniSpectrograph),
+        new FrameworkPropertyMetadata(Brushes.White, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public Brush BarBrush
+    {
+        get => (Brush)GetValue(BarBrushProperty);
+        set => SetValue(BarBrushProperty, value);
+    }
+
+    public Brush TipBrush
+    {
+        get => (Brush)GetValue(TipBrushProperty);
+        set => SetValue(TipBrushProperty, value);
+    }
 
     private readonly DispatcherTimer _timer;
     private readonly float[] _displayed = (float[])IdleBars.Clone();
@@ -29,6 +46,8 @@ public sealed class MiniSpectrograph : FrameworkElement
 
     public MiniSpectrograph()
     {
+        SetResourceReference(BarBrushProperty, "Nocturne.Brush.Accent");
+        SetResourceReference(TipBrushProperty, "Nocturne.Brush.AccentLight");
         IsHitTestVisible = false;
         SnapsToDevicePixels = true;
         RenderOptions.SetEdgeMode(this, EdgeMode.Aliased);
@@ -132,12 +151,5 @@ public sealed class MiniSpectrograph : FrameworkElement
         }
 
         drawingContext.Pop();
-    }
-
-    private static Brush CreateFrozen(byte a, byte r, byte g, byte b)
-    {
-        var brush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(a, r, g, b));
-        brush.Freeze();
-        return brush;
     }
 }

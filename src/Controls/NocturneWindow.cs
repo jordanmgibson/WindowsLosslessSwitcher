@@ -7,7 +7,7 @@ namespace WindowsLosslessSwitcher.Controls;
 /// <summary>
 /// Base for the borderless Nocturne windows: custom <see cref="WindowChrome"/> with a 42px
 /// caption drag region, no Aero caption buttons, DWM-rounded corners on Windows 11, and shared
-/// caption-button handlers. The 1px #3f424d ring is each window's outermost Border; the thin
+/// caption-button handlers. The themed 1px ring is each window's outermost Border; the thin
 /// bottom glass strip keeps the standard DWM drop shadow alive on a borderless window.
 /// </summary>
 public class NocturneWindow : Window
@@ -17,6 +17,7 @@ public class NocturneWindow : Window
     public NocturneWindow()
     {
         WindowStyle = WindowStyle.None;
+        FontSize = 14;
         SnapsToDevicePixels = true;
         UseLayoutRounding = true;
         _chrome = new WindowChrome
@@ -42,6 +43,9 @@ public class NocturneWindow : Window
 
     protected void MinimizeButton_OnClick(object sender, RoutedEventArgs e) =>
         WindowState = WindowState.Minimized;
+
+    protected void MaximizeRestoreButton_OnClick(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
     protected void CloseButton_OnClick(object sender, RoutedEventArgs e) => Close();
 }

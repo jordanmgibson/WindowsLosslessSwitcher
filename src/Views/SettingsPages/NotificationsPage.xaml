@@ -1,54 +1,39 @@
-<UserControl x:Class="WindowsLosslessSwitcher.Views.SettingsPages.NotificationsPage"
-             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+<UserControl
+  x:Class="WindowsLosslessSwitcher.Views.SettingsPages.NotificationsPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:controls="clr-namespace:WindowsLosslessSwitcher.Controls">
   <StackPanel>
-    <TextBlock FontSize="{StaticResource Nocturne.FontSize.Heading}"
-               FontWeight="Medium"
-               Text="Notifications" />
-
-    <Grid Margin="0,20,0,10">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*" />
-        <ColumnDefinition Width="Auto" />
-      </Grid.ColumnDefinitions>
-      <StackPanel Grid.Column="0">
-        <TextBlock FontSize="{StaticResource Nocturne.FontSize.Body}" Text="Popup when the format changes" />
-        <TextBlock Margin="0,2,0,0"
-                   FontSize="{StaticResource Nocturne.FontSize.Small}"
-                   Foreground="{StaticResource Nocturne.Brush.Text40}"
-                   Text="A small card in the bottom-right corner of the screen" />
+    <TextBlock
+      Text="Notifications"
+      FontSize="{StaticResource Nocturne.FontSize.Heading}"
+      FontWeight="SemiBold" />
+    <Border
+      Style="{StaticResource Nocturne.SettingsGroup}">
+      <StackPanel>
+        <controls:SettingsRow
+          Header="Show format-change notifications"
+          Description="Show a small notification when the output format changes.">
+          <ToggleButton
+            IsChecked="{Binding EnableSwitchToasts}"
+            AutomationProperties.Name="Show format-change notifications"
+            Style="{StaticResource Nocturne.ToggleSwitch}" />
+        </controls:SettingsRow>
+        <controls:SettingsRow
+          Header="Include song details"
+          Description="Include artwork, song, artist, and album."
+          IsEnabled="{Binding EnableSwitchToasts}">
+          <ToggleButton
+            IsChecked="{Binding IncludeTrackMetadataInSwitchToasts}"
+            AutomationProperties.Name="Include song details in notifications"
+            Style="{StaticResource Nocturne.ToggleSwitch}" />
+        </controls:SettingsRow>
       </StackPanel>
-      <ToggleButton Grid.Column="1"
-                    Margin="12,0,0,0"
-                    VerticalAlignment="Center"
-                    IsChecked="{Binding EnableSwitchToasts}"
-                    Style="{StaticResource Nocturne.ToggleSwitch}" />
-    </Grid>
-
-    <Grid Margin="0,0,0,10">
-      <Grid.Style>
-        <Style TargetType="Grid">
-          <Style.Triggers>
-            <DataTrigger Binding="{Binding EnableSwitchToasts}" Value="False">
-              <Setter Property="Opacity" Value="0.4" />
-              <Setter Property="IsEnabled" Value="False" />
-            </DataTrigger>
-          </Style.Triggers>
-        </Style>
-      </Grid.Style>
-      <TextBlock VerticalAlignment="Center"
-                 FontSize="{StaticResource Nocturne.FontSize.Body}"
-                 Text="Include song, artist, and album" />
-      <ToggleButton HorizontalAlignment="Right"
-                    VerticalAlignment="Center"
-                    IsChecked="{Binding IncludeTrackMetadataInSwitchToasts}"
-                    Style="{StaticResource Nocturne.ToggleSwitch}" />
-    </Grid>
-
-    <TextBlock Margin="0,10,0,0"
-               FontSize="{StaticResource Nocturne.FontSize.Note}"
-               Foreground="{StaticResource Nocturne.Brush.Text40}"
-               Text="With song details on, the popup shows artwork and the track line; with them off, a minimal pill with just the new format appears."
-               TextWrapping="Wrap" />
+    </Border>
+    <TextBlock
+      Text="When song details are off, notifications show only the new audio format."
+      TextWrapping="Wrap"
+      Foreground="{DynamicResource Nocturne.Brush.Text55}"
+      FontSize="{StaticResource Nocturne.FontSize.Small}" />
   </StackPanel>
 </UserControl>

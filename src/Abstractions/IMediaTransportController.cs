@@ -37,6 +37,13 @@ public interface IMediaTransportController
     /// </summary>
     Task<bool> TryChangePlaybackPositionAsync(TimeSpan position, CancellationToken cancellationToken);
 
+    /// <summary>Minimum elapsed position needed for a safe restart on this player.</summary>
+    TimeSpan MinimumRestartPosition => TimeSpan.Zero;
+
+    /// <summary>Restarts only the expected, paused recording and confirms the resulting timeline.</summary>
+    Task<bool> TryRestartCurrentTrackAsync(string expectedTrackKey, CancellationToken cancellationToken) =>
+        TryChangePlaybackPositionAsync(TimeSpan.Zero, cancellationToken);
+
     /// <summary>
     /// Attempts to skip to the next track. Returns false when no session is
     /// active or the session does not currently allow skipping forward.

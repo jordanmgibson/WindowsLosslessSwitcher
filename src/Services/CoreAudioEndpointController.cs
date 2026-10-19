@@ -18,14 +18,14 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
     // 32-bit float shared-mode support even when 24-bit is the effective hardware depth.
     private static readonly int[] CandidateDepths = [16, 24, 32];
 
-    // Number of polling attempts after calling SetDeviceFormat before reporting failure.
-    // PolicyConfig changes propagate asynchronously through the audio engine; 5 attempts at
-    // 200 ms each gives up to 1 second of confirmation time before giving up.
+    // Five reads retain the original 800 ms propagation budget (four waits). Check early
+    // for fast drivers, then back off rather than shortening the window for slower DACs.
     private const int VerificationAttempts = 5;
 
-    // Delay between each format-verification poll. Together with VerificationAttempts this
-    // defines the total window: 5 × 200 ms = 1 000 ms maximum before declaring a failure.
     private static readonly TimeSpan VerificationRetryDelay = TimeSpan.FromMilliseconds(200);
+
+    internal static TimeSpan GetVerificationRetryDelay(int attempt) =>
+        TimeSpan.FromMilliseconds(attempt switch { 1 => 50, 2 => 100, 3 => 150, _ => 500 });
     private readonly object _supportedFormatsSync = new();
     private readonly Dictionary<string, IReadOnlyList<EndpointFormatDescriptor>> _supportedFormatsCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _lastApplyDiagnostics = new(StringComparer.Ordinal);
@@ -39,9 +39,15 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
             using var enumerator = new MMDeviceEnumerator();
             using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
 
-            return enumerator
-                .EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
-                .Select(device => new AudioDeviceInfo(device.ID, device.FriendlyName, device.ID == defaultDevice.ID))
+            var devices = new List<AudioDeviceInfo>();
+            foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            {
+                using (device)
+                {
+                    devices.Add(new AudioDeviceInfo(device.ID, device.FriendlyName, device.ID == defaultDevice.ID));
+                }
+            }
+            return devices
                 .OrderByDescending(device => device.IsDefault)
                 .ThenBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -199,6 +205,9 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
     }
 
     public float? GetProcessSessionPeak(string deviceId, string processName)
+        => GetProcessSessionSnapshot(deviceId, processName).Peak;
+
+    public ProcessAudioSessionSnapshot GetProcessSessionSnapshot(string deviceId, string processName)
     {
         // The per-session meter isolates the process's own audio: the endpoint MASTER meter mixes
         // every app on the device, so with anything else playing it reads audio even when this
@@ -213,16 +222,18 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
             var sessions = manager.Sessions;
             if (sessions is null)
             {
-                return null;
+                return new(null, null);
             }
 
             var maxPeak = 0f;
+            var active = false;
             for (var i = 0; i < sessions.Count; i++)
             {
                 var session = sessions[i];
                 try
                 {
                     bool counts;
+                    var ownerAlive = true;
                     try
                     {
                         using var process = System.Diagnostics.Process.GetProcessById((int)session.GetProcessID);
@@ -238,12 +249,15 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
                         // process cannot be some other app playing audio, so orphaned sessions
                         // count toward the target's peak.
                         counts = true;
+                        ownerAlive = false;
                     }
 
                     if (!counts)
                     {
                         continue;
                     }
+
+                    active |= ownerAlive && session.State == NAudio.CoreAudioApi.Interfaces.AudioSessionState.AudioSessionStateActive;
 
                     var peak = session.AudioMeterInformation?.MasterPeakValue ?? 0f;
                     if (peak > maxPeak)
@@ -257,11 +271,11 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
                 }
             }
 
-            return maxPeak;
+            return new(active, maxPeak);
         }
         catch
         {
-            return null;
+            return new(null, null);
         }
     }
 
@@ -322,7 +336,8 @@ public sealed class CoreAudioEndpointController : IAudioEndpointController
                 VerificationAttempts,
                 VerificationRetryDelay,
                 () => ReadCurrentDeviceFormatSnapshot(deviceId),
-                Thread.Sleep);
+                Thread.Sleep,
+                GetVerificationRetryDelay);
 
             verifiedDeviceFormat = verification.VerifiedFormat;
             var diagnostics =

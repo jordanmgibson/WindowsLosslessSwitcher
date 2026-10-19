@@ -530,6 +530,78 @@ public sealed class AppleMusicCatalogResolverTests
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    [Theory]
+    [InlineData("Sān-Z, HOYO-MiX, BPM15Q & 苺りなはむ", "Sān-Z, HOYO-MiX, BPM15Q & ICHIGORINAHAMU")]
+    [InlineData("Sān-Z, HOYO-MiX, BPM15Q & ICHIGORINAHAMU", "苺りなはむ, BPM15Q, HOYO-MiX & Sān-Z")]
+    [InlineData("苺りなはむ", "ICHIGORINAHAMU")]
+    public async Task SearchBestMatchAsync_Issue4_VerifiedArtistAliasMatchesCompleteCredits(string native, string catalog)
+    {
+        var response = BuildSearchResponse("心、妄想色に", catalog, "妄想色心跳 - Single");
+        var resolver = CreateResolver((_, _) => Task.FromResult<string?>(response));
+        var track = CreateTrack("心、妄想色に", native, "心、妄想色に - Single");
+
+        var match = await resolver.SearchBestMatchAsync(track, "fake-token", CancellationToken.None);
+
+        Assert.NotNull(match);
+        Assert.True(match.Value.Score >= 150);
+    }
+
+    [Theory]
+    [InlineData("Sān-Z, HOYO-MiX, BPM15Q & Another Singer", "心、妄想色に")]
+    [InlineData("Sān-Z, HOYO-MiX, BPM15Q & ICHIGORINAHAMU Cover Band", "心、妄想色に")]
+    [InlineData("Sān-Z, HOYO-MiX, BPM15Q & ICHIGORINAHAMU", "Different Song")]
+    public async Task SearchBestMatchAsync_Issue4_AliasDoesNotRelaxUnrelatedCreditsOrTitles(string artist, string title)
+    {
+        var response = BuildSearchResponse(title, artist, "妄想色心跳 - Single");
+        var resolver = CreateResolver((_, _) => Task.FromResult<string?>(response));
+        var track = CreateTrack("心、妄想色に", "Sān-Z, HOYO-MiX, BPM15Q & 苺りなはむ", "心、妄想色に - Single");
+
+        Assert.Null(await resolver.SearchBestMatchAsync(track, "fake-token", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("我没有远方", "罗琦", "随心所欲", "罗琦", "随心所欲", "cn", 44100)]
+    [InlineData("心、妄想色に", "Sān-Z, HOYO-MiX, BPM15Q & 苺りなはむ", "心、妄想色に - Single", "Sān-Z, HOYO-MiX, BPM15Q & ICHIGORINAHAMU", "妄想色心跳 - Single", "tw", 48000)]
+    public async Task ResolveAsync_Issue4_ReportedRecordingUsesItsCatalogManifest(
+        string title, string nativeArtist, string nativeAlbum, string catalogArtist, string catalogAlbum, string storefront, int rate)
+    {
+        var payload = Base64UrlEncode(JsonSerializer.Serialize(new { exp = DateTimeOffset.UtcNow.AddHours(6).ToUnixTimeSeconds() }));
+        var search = BuildSearchResponse(title, catalogArtist, catalogAlbum);
+        var resolver = new AppleMusicCatalogResolver(CreateLogger(), (request, _) =>
+        {
+            var uri = request.RequestUri!;
+            var response = uri.AbsolutePath.EndsWith("browse", StringComparison.Ordinal)
+                ? "<script src=\"/assets/index-abc123.js\"></script>"
+                : uri.AbsolutePath.Contains("/search", StringComparison.Ordinal) ? search
+                : uri.AbsolutePath.Contains("/songs/", StringComparison.Ordinal)
+                    ? """{"data":[{"id":"12345","attributes":{"extendedAssetUrls":{"enhancedHls":"https://example.test/manifest"},"audioTraits":["lossless"]}}]}"""
+                : uri.Host == "example.test" ? $"#EXT-X-MEDIA:TYPE=AUDIO,SAMPLE-RATE={rate},BIT-DEPTH=16"
+                : $"var token='eyJhbGciOiJFUzI1NiJ9.{payload}.sig';";
+            if (uri.AbsolutePath.Contains("/v1/catalog/", StringComparison.Ordinal)) Assert.Contains($"/catalog/{storefront}/", uri.AbsolutePath);
+            return Task.FromResult<string?>(response);
+        }, storefront);
+
+        var result = await resolver.ResolveAsync(CreateTrack(title, nativeArtist, nativeAlbum), CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(rate, result.SampleRateHz);
+        Assert.Equal(AudioFormatSource.CatalogManifest, result.Source);
+    }
+
+    [Fact]
+    public async Task SearchBestMatchAsync_Issue3_PrefersTheRequestedAlbumBeforeAnotherMaster()
+    {
+        var resolver = CreateResolver((request, _) =>
+        {
+            var albumQuery = Uri.UnescapeDataString(request.RequestUri!.Query).Contains("Wanted Album", StringComparison.Ordinal);
+            return Task.FromResult<string?>(BuildSearchResponse("Shared Song", "Same Artist", albumQuery ? "Wanted Album" : "Other Edition"));
+        });
+        var match = await resolver.SearchBestMatchAsync(CreateTrack("Shared Song", "Same Artist", "Wanted Album"), "fake-token", CancellationToken.None);
+
+        Assert.NotNull(match);
+        Assert.Equal("Wanted Album", match.Value.Album);
+    }
+
     private static AppleMusicCatalogResolver CreateResolver(
         Func<HttpRequestMessage, CancellationToken, Task<string?>> sendAsync) =>
         new(CreateLogger(), sendAsync, "us");

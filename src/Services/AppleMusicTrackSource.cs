@@ -71,6 +71,7 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
     }
 
     public event EventHandler<TrackSnapshot>? TrackChanged;
+    public event EventHandler? PlaybackResumed;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -299,6 +300,50 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         }
     }
 
+    public TimeSpan MinimumRestartPosition
+    {
+        get
+        {
+            try
+            {
+                var controls = GetPreferredCommandSession()?.GetPlaybackInfo().Controls;
+                return controls?.IsPlaybackPositionEnabled != true && controls?.IsPreviousEnabled == true
+                    ? TrackRestartController.SafePreviousPosition : TimeSpan.Zero;
+            }
+            catch { return TimeSpan.Zero; }
+        }
+    }
+
+    public async Task<bool> TryRestartCurrentTrackAsync(string expectedTrackKey, CancellationToken cancellationToken)
+    {
+        var session = GetPreferredCommandSession();
+        if (session is null) return false;
+        try
+        {
+            return await TrackRestartController.TryRestartAsync(
+                expectedTrackKey,
+                async token =>
+                {
+                    var properties = await session.TryGetMediaPropertiesAsync().AsTask(token);
+                    var snapshot = AppleMusicTrackMetadataNormalizer.NormalizeSnapshot(BuildTrackSnapshot(session, properties, "restart-check"));
+                    var playback = session.GetPlaybackInfo();
+                    return new RestartPlaybackSnapshot(snapshot.UniqueKey, session.GetTimelineProperties().Position,
+                        playback.Controls?.IsPlaybackPositionEnabled == true,
+                        playback.Controls?.IsPreviousEnabled == true,
+                        playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused);
+                },
+                token => { token.ThrowIfCancellationRequested(); return session.TryChangePlaybackPositionAsync(0).AsTask(token); },
+                token => { token.ThrowIfCancellationRequested(); return session.TrySkipPreviousAsync().AsTask(token); },
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Failed to restart the current Apple Music recording: {ex.Message}");
+            return false;
+        }
+    }
+
     public async Task<bool> TrySkipNextAsync(CancellationToken cancellationToken)
     {
         var session = GetPreferredCommandSession();
@@ -449,6 +494,7 @@ public sealed class AppleMusicTrackSource : ITrackSource, IMediaTransportControl
         {
             _logger.Info($"Apple Music playback-playing callback received from {sender.SourceAppUserModelId}.");
             await RefreshSessionFromPropertiesAsync(sender, "playback-playing", publishTrackSnapshot: true);
+            PlaybackResumed?.Invoke(this, EventArgs.Empty);
             return;
         }
 

@@ -19,6 +19,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string? _selectedDeviceId;
     private bool _launchAtLogin;
     private bool _switchBitDepth;
+    private bool _rewindAfterFormatSwitch = true;
+    private int _nativeSampleRateHz = 96000;
+    private int _nativeBitDepth = 24;
+    private bool _canCorrectCurrentTrack;
+    private bool _hasCurrentTrackCorrection;
     private bool _preferClosestSampleRateMultiple;
     private int _defaultBitDepth = 24;
     private bool _enableSwitchToasts;
@@ -51,7 +56,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private List<int> _allowedBitDepths = [];
     private bool _syncingFormatOptions;
     private ImageSource? _artworkImage;
-    private Color _artworkGlowColor = Color.FromRgb(0x42, 0x3A, 0x6A);
+    private Color _artworkGlowColor = Color.FromRgb(0x50, 0x50, 0x50);
     private string _trackTitleText = "Nothing playing";
     private string _trackMetaText = "Waiting for Apple Music";
     private SwitchPhase _phase = SwitchPhase.Idle;
@@ -87,6 +92,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             () => OpenReleasesPageRequested?.Invoke(),
             () => CanOpenReleasesPage);
         OpenAllSettingsCommand = new RelayCommand(() => OpenSettingsWindowRequested?.Invoke());
+        SaveNativeFormatCorrectionCommand = new RelayCommand(() => SaveNativeFormatCorrectionRequested?.Invoke(), () => CanCorrectCurrentTrack);
+        RemoveNativeFormatCorrectionCommand = new RelayCommand(() => RemoveNativeFormatCorrectionRequested?.Invoke(), () => HasCurrentTrackCorrection);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -106,6 +113,26 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public event Action? ClearFormatCacheRequested;
 
     public event Action? OpenSettingsWindowRequested;
+    public event Action? SaveNativeFormatCorrectionRequested;
+    public event Action? RemoveNativeFormatCorrectionRequested;
+
+    public RelayCommand SaveNativeFormatCorrectionCommand { get; }
+    public RelayCommand RemoveNativeFormatCorrectionCommand { get; }
+    public IReadOnlyList<int> NativeSampleRateOptions => TrackFormatCorrection.SupportedRates;
+    public IReadOnlyList<int> NativeBitDepthOptions { get; } = [16, 24, 32];
+    public int NativeSampleRateHz { get => _nativeSampleRateHz; set => SetField(ref _nativeSampleRateHz, value); }
+    public int NativeBitDepth { get => _nativeBitDepth; set => SetField(ref _nativeBitDepth, value); }
+    public TrackSnapshot? CorrectionTrack { get; private set; }
+    public bool CanCorrectCurrentTrack
+    {
+        get => _canCorrectCurrentTrack;
+        private set { if (SetField(ref _canCorrectCurrentTrack, value)) SaveNativeFormatCorrectionCommand.RaiseCanExecuteChanged(); }
+    }
+    public bool HasCurrentTrackCorrection
+    {
+        get => _hasCurrentTrackCorrection;
+        private set { if (SetField(ref _hasCurrentTrackCorrection, value)) RemoveNativeFormatCorrectionCommand.RaiseCanExecuteChanged(); }
+    }
 
     public ObservableCollection<AudioDeviceInfo> Devices { get; } = [];
 
@@ -191,6 +218,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         get => _defaultBitDepth;
         set => SetField(ref _defaultBitDepth, AppSettings.NormalizeBitDepth(value));
+    }
+
+    public bool RewindAfterFormatSwitch
+    {
+        get => _rewindAfterFormatSwitch;
+        set => SetField(ref _rewindAfterFormatSwitch, value);
     }
 
     public bool PreferClosestSampleRateMultiple
@@ -562,11 +595,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     public void UpdateStatus(Services.SwitchingStatus status)
     {
+        CorrectionTrack = status.Track;
+        CanCorrectCurrentTrack = status.Track is not null && TrackFormatCorrection.FromTrack(status.Track, NativeSampleRateHz, NativeBitDepth).IsValid;
+        HasCurrentTrackCorrection = status.RequestedFormat?.Source == AudioFormatSource.UserVerified;
+        if (HasCurrentTrackCorrection)
+        {
+            NativeSampleRateHz = status.RequestedFormat!.SampleRateHz;
+            NativeBitDepth = status.RequestedFormat.BitDepth;
+        }
         ResolverStatusText = status.ResolverStatusText;
         CurrentTrackText = status.Track is null
             ? "No track detected"
             : $"{status.Track.Title ?? "Unknown Title"} - {status.Track.Artist ?? "Unknown Artist"}";
-        RequestedFormatText = status.RequestedFormat is null
+        var undetermined = status.RequestedFormat?.Source == AudioFormatSource.TierFallback ||
+            status.RequestedFormat?.Confidence == ResolutionConfidence.Tier;
+        RequestedFormatText = undetermined ? "Undetermined"
+            : status.RequestedFormat is null
             ? "-"
             : $"{AudioFormatTextFormatter.Format(status.RequestedFormat)} ({status.RequestedFormat.Source})";
         AppliedFormatText = status.AppliedFormat is null
@@ -576,7 +620,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         TrackTitleText = status.Track?.Title is { Length: > 0 } title ? title : "Nothing playing";
         TrackMetaText = BuildTrackMetaText(status.Track);
-        RequestedFormatDisplayText = status.RequestedFormat is null
+        RequestedFormatDisplayText = undetermined ? "Undetermined"
+            : status.RequestedFormat is null
             ? "—"
             : AudioFormatTextFormatter.Format(status.RequestedFormat);
         SourceChipText = BuildSourceChipText(status.RequestedFormat?.Source);
@@ -627,6 +672,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     internal static SwitchPhase DerivePhase(Services.SwitchingStatus status)
     {
         var text = status.ResolverStatusText;
+        if (text == "Resolver: Rate undetermined") return SwitchPhase.NoChange;
         if (text.StartsWith("Switching: Playback restored", StringComparison.Ordinal))
         {
             return SwitchPhase.Restored;
@@ -642,6 +688,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             "Resolver: Waiting for Apple Music" or "Resolver: Starting" or "Resolver: Idle" => SwitchPhase.Idle,
             "Resolver: Detecting track" => SwitchPhase.Detecting,
             "Resolver: Resolving format" => SwitchPhase.Resolving,
+            "Resolver: Deferred until playback" => SwitchPhase.Idle,
             "Resolver: Error" or "Resolver: Failed" or "Resolver: No target device" => SwitchPhase.Failed,
             _ when text.StartsWith("Resolver: ", StringComparison.Ordinal) =>
                 status.AppliedFormat is not null
@@ -653,8 +700,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     internal static string BuildPhaseText(SwitchPhase phase, Services.SwitchingStatus status) => phase switch
     {
+        SwitchPhase.Idle when status.ResolverStatusText == "Resolver: Deferred until playback" => "Paused — format change will apply on resume",
         SwitchPhase.Idle => "Watching Apple Music media session",
-        SwitchPhase.Detecting => "Track change — output muted",
+        SwitchPhase.Detecting => "Detecting track format…",
         SwitchPhase.Resolving => "Matching in Apple Music catalog…",
         SwitchPhase.Switching when status.ResolverStatusText.Contains("Restarting Apple Music", StringComparison.Ordinal) =>
             "Restarting Apple Music…",
@@ -662,6 +710,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             "Recovering playback…",
         SwitchPhase.Switching => "Switching device format…",
         SwitchPhase.Restored => "Playback restored",
+        SwitchPhase.NoChange when status.ResolverStatusText == "Resolver: Rate undetermined" =>
+            "Track rate undetermined — keeping the current device format",
         SwitchPhase.NoChange => "No switch needed — format already matches",
         SwitchPhase.Failed => string.IsNullOrWhiteSpace(status.FailureReason)
             ? "Something went wrong — see diagnostics"
@@ -691,6 +741,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         AudioFormatSource.CatalogManifest or AudioFormatSource.CachedCatalog => "Catalog match",
         AudioFormatSource.LocalFile => "Local file",
         AudioFormatSource.TierFallback => "Fallback",
+        AudioFormatSource.UserVerified => "Native correction",
         _ => "",
     };
 
@@ -704,6 +755,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 title is { Length: > 0 }
                     ? $"Switched to {formatText} for “{title}”"
                     : $"Switched to {formatText}",
+            SwitchPhase.NoChange when status.ResolverStatusText == "Resolver: Rate undetermined" =>
+                "Track rate undetermined — device format unchanged",
             SwitchPhase.NoChange when formatText is not null && title is { Length: > 0 } =>
                 $"“{title}” — format already matched ({formatText})",
             SwitchPhase.Failed when !string.IsNullOrWhiteSpace(status.FailureReason) =>
@@ -743,7 +796,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public void UpdateArtwork(ImageSource? image, Color? glowColor, string? trackKey = null)
     {
         ArtworkImage = image;
-        ArtworkGlowColor = glowColor ?? Color.FromRgb(0x42, 0x3A, 0x6A);
+        ArtworkGlowColor = glowColor ?? Color.FromRgb(0x50, 0x50, 0x50);
         ArtworkTrackKey = image is null ? null : trackKey;
     }
 

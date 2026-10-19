@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Isolated WPF verification for settings bindings, compact layouts, keyboard-focus
+  resource resolution, and light/dark/contrast palettes, included in CI.
+- Per-recording native format corrections that override web catalog/cache results
+  for the matching title, artist, and album, with save/apply and removal controls.
+- Optional intro replay after a live format change, with recording and timeline
+  confirmation before using Apple Music's seek or Previous controls.
+
 ### Fixed
+
+- Known same-format cache/native/local results no longer mute or restart playback (#2).
+- Undetermined-rate fallback keeps the current device format and is labelled honestly (#3/#4).
+- Catalog matching recognizes the verified 苺りなはむ/ICHIGORINAHAMU artist credit,
+  compares reordered full credits, and checks album-specific candidates before
+  accepting another edition. Old matching-cache entries are invalidated (#3/#4).
+- Keep intro-replay preparation muted before lookup and across inherited pauses,
+  preventing an audible preview followed by a deliberate restart.
+- With intro replay off, keep playback audible during format lookup and unchanged-format transitions;
+  defer device changes while paused and release coordinator-owned pauses on shutdown.
+- Sample audio-session activity and peak together and check fast endpoint changes
+  earlier while retaining the existing slow-driver verification budget.
 
 - A track Apple Music never started is now retried once in place (pause,
   longer settle, play) before the app skips it, so songs that just needed a
@@ -31,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replace the purple interface palette with neutral charcoal surfaces and restrained
+  red active controls, including matching light-mode accents and neutral artwork placeholders.
+- Refresh Windows controls with system typography, readable labels, wrapping settings
+  rows, system appearance/contrast support, and a resizable Settings window.
+- Ctrl+, opens Settings; reopening the app activates its existing main window.
 - The tray flyout's track title and artist line scroll (marquee) when they
   are too long to fit, instead of being cut off with an ellipsis.
 - Local files no longer hit the Apple Music catalog on every play. A track

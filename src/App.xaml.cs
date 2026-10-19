@@ -45,12 +45,15 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        AccessibleTheme.Apply(Resources, SystemParameters.HighContrast, AccessibleTheme.UseLightTheme);
+        SystemParameters.StaticPropertyChanged += OnSystemAppearanceChanged;
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         var launchMinimized = e.Args.Any(arg => string.Equals(arg, "--minimized", StringComparison.OrdinalIgnoreCase));
 
         if (!_instanceGuard.TryAcquire())
         {
             _logger.Warn("Startup ownership: duplicate instance rejected.");
-            if (!launchMinimized)
+            if (!launchMinimized && !_instanceGuard.RequestActivation())
             {
                 System.Windows.MessageBox.Show(
                     "Windows Lossless Switcher is already running.",
@@ -64,6 +67,7 @@ public partial class App : Application
         }
 
         _logger.Info("Startup ownership: primary instance.");
+        _instanceGuard.ActivationRequested += OnActivationRequested;
         _logger.Info($"OS version: {Environment.OSVersion.Version} ({(Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit")}, {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}).");
 
         _settings = _settingsService.Load();
@@ -72,6 +76,7 @@ public partial class App : Application
         _viewModel.SelectedDeviceId = _settings.PinnedDeviceId;
         _viewModel.LaunchAtLogin = _settings.LaunchAtLogin;
         _viewModel.SwitchBitDepth = _settings.SwitchBitDepth;
+        _viewModel.RewindAfterFormatSwitch = _settings.RewindAfterFormatSwitch;
         _viewModel.PreferClosestSampleRateMultiple = _settings.PreferClosestSampleRateMultiple;
         _viewModel.DefaultBitDepth = _settings.DefaultBitDepth;
         _viewModel.EnableSwitchToasts = _settings.EnableSwitchToasts;
@@ -91,6 +96,8 @@ public partial class App : Application
         _viewModel.RestoreOriginalFormatRequested += OnRestoreOriginalFormatRequested;
         _viewModel.ClearFormatCacheRequested += OnClearFormatCacheRequested;
         _viewModel.OpenSettingsWindowRequested += ShowSettingsWindow;
+        _viewModel.SaveNativeFormatCorrectionRequested += OnSaveNativeFormatCorrection;
+        _viewModel.RemoveNativeFormatCorrectionRequested += OnRemoveNativeFormatCorrection;
 
         _trayIconHost = new TrayIconHost();
         _trayIconHost.OpenRequested += ShowMainWindow;
@@ -193,8 +200,27 @@ public partial class App : Application
         _viewModel.RestoreOriginalFormatRequested -= OnRestoreOriginalFormatRequested;
         _viewModel.ClearFormatCacheRequested -= OnClearFormatCacheRequested;
         _viewModel.OpenSettingsWindowRequested -= ShowSettingsWindow;
+        _viewModel.SaveNativeFormatCorrectionRequested -= OnSaveNativeFormatCorrection;
+        _viewModel.RemoveNativeFormatCorrectionRequested -= OnRemoveNativeFormatCorrection;
+        SystemParameters.StaticPropertyChanged -= OnSystemAppearanceChanged;
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        _instanceGuard.ActivationRequested -= OnActivationRequested;
         _instanceGuard.Dispose();
         base.OnExit(e);
+    }
+
+    private void OnActivationRequested(object? sender, EventArgs e) => Dispatcher.BeginInvoke(ShowMainWindow);
+
+    private void OnSystemAppearanceChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SystemParameters.HighContrast))
+            Dispatcher.BeginInvoke(() => AccessibleTheme.Apply(Resources, SystemParameters.HighContrast, AccessibleTheme.UseLightTheme));
+    }
+
+    private void OnUserPreferenceChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs args)
+    {
+        if (!Dispatcher.HasShutdownStarted)
+            Dispatcher.BeginInvoke(() => AccessibleTheme.Apply(Resources, SystemParameters.HighContrast, AccessibleTheme.UseLightTheme));
     }
 
     private void OnCoordinatorStatusChanged(object? sender, SwitchingStatus status)
@@ -252,6 +278,30 @@ public partial class App : Application
         });
     }
 
+    private void OnSaveNativeFormatCorrection()
+    {
+        var track = _viewModel.CorrectionTrack;
+        if (_settings is null || track is null || _latestStatus?.Track?.UniqueKey != track.UniqueKey) return;
+        var correction = TrackFormatCorrection.FromTrack(track, _viewModel.NativeSampleRateHz, _viewModel.NativeBitDepth);
+        if (!correction.IsValid) return;
+        _settings.TrackFormatCorrections = _settings.TrackFormatCorrections
+            .Where(existing => existing is not null && !existing.Matches(track)).Append(correction).ToList();
+        _settingsService.Save(_settings);
+        _coordinator?.UpdateSettings(_settings);
+        _coordinator?.ReprocessTrack(track);
+    }
+
+    private void OnRemoveNativeFormatCorrection()
+    {
+        var track = _viewModel.CorrectionTrack;
+        if (_settings is null || track is null || _latestStatus?.Track?.UniqueKey != track.UniqueKey) return;
+        _settings.TrackFormatCorrections = _settings.TrackFormatCorrections
+            .Where(existing => existing is not null && !existing.Matches(track)).ToList();
+        _settingsService.Save(_settings);
+        _coordinator?.UpdateSettings(_settings);
+        _coordinator?.ReprocessTrack(track);
+    }
+
     private void OnFormatCacheUpdated(object? sender, FormatCacheUpdateEventArgs e)
     {
         Dispatcher.BeginInvoke(() =>
@@ -299,6 +349,7 @@ public partial class App : Application
             e.PropertyName is not nameof(MainWindowViewModel.SelectedDeviceId) &&
             e.PropertyName is not nameof(MainWindowViewModel.LaunchAtLogin) &&
             e.PropertyName is not nameof(MainWindowViewModel.SwitchBitDepth) &&
+            e.PropertyName is not nameof(MainWindowViewModel.RewindAfterFormatSwitch) &&
             e.PropertyName is not nameof(MainWindowViewModel.PreferClosestSampleRateMultiple) &&
             e.PropertyName is not nameof(MainWindowViewModel.DefaultBitDepth) &&
             e.PropertyName is not nameof(MainWindowViewModel.EnableSwitchToasts) &&
@@ -317,6 +368,7 @@ public partial class App : Application
         _settings.PinnedDeviceId = _viewModel.SelectedDeviceId;
         _settings.LaunchAtLogin = _viewModel.LaunchAtLogin;
         _settings.SwitchBitDepth = _viewModel.SwitchBitDepth;
+        _settings.RewindAfterFormatSwitch = _viewModel.RewindAfterFormatSwitch;
         _settings.PreferClosestSampleRateMultiple = _viewModel.PreferClosestSampleRateMultiple;
         _settings.DefaultBitDepth = _viewModel.DefaultBitDepth;
         _settings.EnableSwitchToasts = _viewModel.EnableSwitchToasts;

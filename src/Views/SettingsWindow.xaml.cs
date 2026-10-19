@@ -23,6 +23,13 @@ public partial class SettingsWindow : NocturneWindow
         NavTileSpectrograph.Attach(spectrumSource);
         Closing += OnClosing;
         NavList.SelectedIndex = 0;
+        MaxHeight = Math.Max(MinHeight, SystemParameters.WorkArea.Height - 32);
+        MaxWidth = Math.Max(MinWidth, SystemParameters.WorkArea.Width - 32);
+        // Let dropdowns and other controls consume Escape before closing their window.
+        KeyDown += (_, args) =>
+        {
+            if (args.Key == System.Windows.Input.Key.Escape) { Close(); args.Handled = true; }
+        };
     }
 
     public void AllowCloseAndClose()

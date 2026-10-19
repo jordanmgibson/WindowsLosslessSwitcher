@@ -49,6 +49,18 @@ public sealed class FormatCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public void Issue4_PreviousMatcherNegativeCacheIsInvalidated()
+    {
+        Assert.True(_store.StoreNoMatch("recording"));
+        var previousMatcher = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(_cachePath))!;
+        previousMatcher["catalogResolverVersion"] = 2;
+        File.WriteAllText(_cachePath, previousMatcher.ToJsonString());
+
+        var upgraded = new FormatCacheStore(_cachePath, null);
+        Assert.False(upgraded.TryGet("recording", out _));
+    }
+
+    [Fact]
     public void Store_IgnoresNonCatalogSources()
     {
         var format = new ResolvedAudioFormat(
@@ -148,6 +160,7 @@ public sealed class FormatCacheStoreTests : IDisposable
     [InlineData("{not-json")]
     [InlineData("{\"schemaVersion\":999,\"catalogResolverVersion\":1,\"entries\":{}}")]
     [InlineData("{\"schemaVersion\":1,\"catalogResolverVersion\":999,\"entries\":{}}")]
+    [InlineData("{\"schemaVersion\":1,\"catalogResolverVersion\":2,\"entries\":{}}")]
     public void TryGet_InvalidDocument_FailsOpenAndNextStoreRepairsFile(string json)
     {
         Directory.CreateDirectory(_directory);

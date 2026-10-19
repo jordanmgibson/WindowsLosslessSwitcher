@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Linked resources also satisfy relative theme/font URIs when the app is hosted here. -->
+    <Page Include="../../src/Themes/*.xaml" Exclude="../../src/Themes/Nocturne.Controls.xaml" Link="Themes/%(Filename)%(Extension)" />
+    <Resource Include="../../src/Assets/Fonts/*.ttf" Link="Assets/Fonts/%(Filename)%(Extension)" />
+    <ProjectReference Include="../../src/WindowsLosslessSwitcher.csproj" />
+  </ItemGroup>
+</Project>

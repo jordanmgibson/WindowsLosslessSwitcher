@@ -9,6 +9,7 @@ public enum AudioFormatSource
     CachedCatalog,
     LocalFile,
     TierFallback,
+    UserVerified,
 }
 
 /// <summary>
