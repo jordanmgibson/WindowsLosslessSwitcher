@@ -22,6 +22,21 @@ A regression case uses a 44.1 kHz default device and a pinned 96 kHz DAC. This
 fixes a separate route to wrong local-file formats; it does not establish the
 cause of any reporter's particular recording.
 
+## New #4 diagnostic from November 1
+
+The later screenshot for **Clocks / Coldplay / A Rush of Blood to the Head**
+shows Apple Music's native Lossless popup at 24-bit / 192 kHz while the app shows
+24-bit / 48 kHz. The attached beta.7 log records a confident US catalog match
+(`1122776156`), a 24-bit / 48 kHz public HLS manifest, and a successful switch
+of the iFi endpoint to 48 kHz. This is a public-catalog versus native-player
+format difference in the available evidence, not a display refresh failure or
+an inability to set the endpoint. The pinned-device fix above applies to the
+local-file path and does not change this catalog result.
+
+The PR's per-recording native correction can set Clocks on this album to the
+192 kHz rate shown by Apple Music. Automatic identification of the native rate
+for every such recording remains unavailable from the public catalog result.
+
 ## Catalog identity and cache behavior
 
 The artist alias above is confirmed by the artist's label's
