@@ -1965,17 +1965,7 @@ public sealed class SwitchingCoordinator : IAsyncDisposable
     }
 
     private AudioDeviceInfo? GetCurrentTargetDevice()
-    {
-        if (Settings.DeviceSelectionMode == DeviceSelectionMode.FollowDefault)
-        {
-            return _audioEndpointController.GetDefaultRenderDevice();
-        }
-
-        var devices = _audioEndpointController.GetRenderDevices();
-        var defaultDevice = devices.FirstOrDefault(device => device.IsDefault)
-            ?? _audioEndpointController.GetDefaultRenderDevice();
-        return DeviceTargetingPolicy.SelectTargetDevice(Settings, devices, defaultDevice);
-    }
+        => DeviceTargetingPolicy.GetCurrentTargetDevice(Settings, _audioEndpointController);
 
     private ResolvedTrackDecision EvaluateResolvedFormat(AudioDeviceInfo targetDevice, ResolvedAudioFormat resolved)
     {

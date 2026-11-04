@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Local-file matching now uses the selected output device's capabilities, including
+  a pinned DAC, instead of assuming the Windows default device is the target.
 - Known same-format cache/native/local results no longer mute or restart playback (#2).
 - Undetermined-rate fallback keeps the current device format and is labelled honestly (#3/#4).
 - Catalog matching recognizes the verified 苺りなはむ/ICHIGORINAHAMU artist credit,

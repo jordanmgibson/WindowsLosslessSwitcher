@@ -112,9 +112,9 @@ public partial class App : Application
         // 2. AppleMusicCatalogResolver is the authoritative test when cache misses — a confident
         //    catalog match yields the exact Apple Music format.
         // 3. When the catalog does not match (local files, or tracks it can't identify),
-        //    LocalDeviceMaxResolver applies the actual format read from the track's PlayCache file,
-        //    or the device's highest supported format when the file can't be read.
-        // 4. TierFallbackResolver is the terminal safety net when there is no usable device.
+        //    LocalDeviceMaxResolver reads the track's PlayCache file and selects a format supported
+        //    by the chosen output device, including a pinned device.
+        // 4. TierFallbackResolver marks the rate undetermined when no file format can be read.
         var audioEndpointController = new CoreAudioEndpointController();
         var formatCacheStore = new FormatCacheStore(_logger);
         _formatCacheStore = formatCacheStore;
@@ -136,7 +136,8 @@ public partial class App : Application
                 new LocalDeviceMaxResolver(
                     audioEndpointController,
                     new PlayCacheTrackFormatReader(_paths, _logger),
-                    _logger),
+                    _logger,
+                    () => DeviceTargetingPolicy.GetCurrentTargetDevice(_settings!, audioEndpointController)),
                 new TierFallbackResolver(_paths, _plistReader, _logger),
             ]);
 

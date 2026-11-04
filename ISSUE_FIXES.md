@@ -13,6 +13,15 @@ DAC or Apple Music installation has been retested.
 | [#4 — Wrong reported sample rate](https://github.com/jordanmgibson/WindowsLosslessSwitcher/issues/4) | The attached log's Japanese/romanized artist mismatch is reproduced and fixed with the verified equivalence 苺りなはむ ↔ ICHIGORINAHAMU. Matching compares complete canonical credit sets, including reordered credits, while retaining the score threshold and rejecting unrelated names. The reported Japanese and Chinese metadata have deterministic manifest/storefront tests. Other native-player/web-master differences still require per-recording native correction; the app does not inspect Apple's encrypted native stream. |
 | [#7 — Allowed sample rates](https://github.com/jordanmgibson/WindowsLosslessSwitcher/issues/7) | Already shipped upstream and confirmed by the reporter. The settings UI and existing allow-list selection/sanitization tests are retained. |
 
+## Pinned output devices
+
+The local-file resolver now selects from the configured output device's supported
+formats. Previously it always read the Windows default device's capabilities,
+which could reject a format the pinned DAC supports or choose the wrong rate.
+A regression case uses a 44.1 kHz default device and a pinned 96 kHz DAC. This
+fixes a separate route to wrong local-file formats; it does not establish the
+cause of any reporter's particular recording.
+
 ## Catalog identity and cache behavior
 
 The artist alias above is confirmed by the artist's label's

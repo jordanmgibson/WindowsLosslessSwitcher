@@ -9,22 +9,25 @@ namespace WindowsLosslessSwitcher.Services;
 /// nothing (shared mode resamples regardless) and the extreme jumps (e.g. 24/48 -> 24/384) the
 /// old device-max behavior made destabilized Apple Music's renderer — so when the file cannot be
 /// located or read (locked by Apple Music, missing cache), this resolver returns null and the
-/// chain falls through to the tier fallback (the user's quality-setting format).
+/// chain falls through to the undetermined-rate tier fallback.
 /// </summary>
 public sealed class LocalDeviceMaxResolver : IFormatResolver
 {
     private readonly IAudioEndpointController _audioEndpointController;
     private readonly ILocalTrackFileFormatReader? _fileFormatReader;
     private readonly DiagnosticsLogger _logger;
+    private readonly Func<AudioDeviceInfo?> _getTargetDevice;
 
     public LocalDeviceMaxResolver(
         IAudioEndpointController audioEndpointController,
         ILocalTrackFileFormatReader? fileFormatReader,
-        DiagnosticsLogger logger)
+        DiagnosticsLogger logger,
+        Func<AudioDeviceInfo?>? getTargetDevice = null)
     {
         _audioEndpointController = audioEndpointController;
         _fileFormatReader = fileFormatReader;
         _logger = logger;
+        _getTargetDevice = getTargetDevice ?? audioEndpointController.GetDefaultRenderDevice;
     }
 
     public string Name => "LocalDeviceMaxResolver";
@@ -39,10 +42,10 @@ public sealed class LocalDeviceMaxResolver : IFormatResolver
     {
         try
         {
-            var device = _audioEndpointController.GetDefaultRenderDevice();
+            var device = _getTargetDevice();
             if (device is null)
             {
-                _logger.Info("Local device-max resolver: no default render device; falling through.");
+                _logger.Info("Local device-max resolver: no target render device; falling through.");
                 return null;
             }
 
