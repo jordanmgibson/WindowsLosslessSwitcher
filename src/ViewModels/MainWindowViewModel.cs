@@ -24,6 +24,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private int _nativeBitDepth = 24;
     private bool _canCorrectCurrentTrack;
     private bool _hasCurrentTrackCorrection;
+    private bool _nativeCorrectionSelectionInitialized;
     private bool _preferClosestSampleRateMultiple;
     private int _defaultBitDepth = 24;
     private bool _enableSwitchToasts;
@@ -595,13 +596,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     public void UpdateStatus(Services.SwitchingStatus status)
     {
+        if (CorrectionTrack?.UniqueKey != status.Track?.UniqueKey ||
+            CorrectionTrack?.DetectedAtUtc != status.Track?.DetectedAtUtc)
+        {
+            _nativeCorrectionSelectionInitialized = false;
+        }
         CorrectionTrack = status.Track;
         CanCorrectCurrentTrack = status.Track is not null && TrackFormatCorrection.FromTrack(status.Track, NativeSampleRateHz, NativeBitDepth).IsValid;
         HasCurrentTrackCorrection = status.RequestedFormat?.Source == AudioFormatSource.UserVerified;
-        if (HasCurrentTrackCorrection)
+        if (HasCurrentTrackCorrection && !_nativeCorrectionSelectionInitialized)
         {
             NativeSampleRateHz = status.RequestedFormat!.SampleRateHz;
             NativeBitDepth = status.RequestedFormat.BitDepth;
+            _nativeCorrectionSelectionInitialized = true;
         }
         ResolverStatusText = status.ResolverStatusText;
         CurrentTrackText = status.Track is null
