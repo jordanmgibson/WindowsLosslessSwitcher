@@ -23,6 +23,8 @@ public sealed class SettingsServiceTests
                 PinnedDeviceId = "device-1",
                 LaunchAtLogin = true,
                 SwitchBitDepth = false,
+                RewindAfterFormatSwitch = false,
+                TrackFormatCorrections = [new("Dirty Diana", "Michael Jackson", "Number Ones", 96000, 24)],
                 DefaultBitDepth = 16,
                 EnableSwitchToasts = true,
                 IncludeTrackMetadataInSwitchToasts = true,
@@ -54,6 +56,8 @@ public sealed class SettingsServiceTests
             Assert.Equal([16, 24], loaded.AllowedBitDepths);
             Assert.Equal("gb", loaded.AppleMusicStorefront);
             Assert.False(loaded.EnableVerboseDiagnostics);
+            Assert.False(loaded.RewindAfterFormatSwitch);
+            Assert.Equal(settings.TrackFormatCorrections, loaded.TrackFormatCorrections);
             Assert.False(loaded.RestartAppleMusicOnPlaybackFailure);
         }
         finally
@@ -63,6 +67,13 @@ public sealed class SettingsServiceTests
                 Directory.Delete(settingsDirectory, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void OlderSettings_EnableIntroRewindByDefault()
+    {
+        var settings = System.Text.Json.JsonSerializer.Deserialize<AppSettings>("{}");
+        Assert.True(settings!.RewindAfterFormatSwitch);
     }
 
     [Fact]

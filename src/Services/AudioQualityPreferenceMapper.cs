@@ -16,13 +16,14 @@ public static class AudioQualityPreferenceMapper
         // The tier preference only tells us the user's ceiling, not the playing track's real rate.
         // Emitting a tier-specific guess (e.g. 48 kHz) misrepresents that rate and forces the device
         // there, upsampling redbook and capping hi-res. When we genuinely cannot determine the rate
-        // we return an honest, conservative 24/44.1 and let the UI tell the user it's a fallback.
+        // return a low-confidence marker. Its legacy numeric fields are not a measurement;
+        // the coordinator keeps the current endpoint format and the UI displays Undetermined.
         return CreateUndetermined(
-            $"Rate undetermined (Apple Music quality: {tierName}) — defaulting to 24/44.1");
+            $"Rate undetermined (Apple Music quality: {tierName}) — keeping the current device format");
     }
 
     /// <summary>
-    /// Builds the conservative "we could not determine the real track rate" fallback format.
+    /// Builds an undetermined-rate marker; its legacy numeric fields must not drive a switch.
     /// </summary>
     internal static ResolvedAudioFormat CreateUndetermined(string description) =>
         new(

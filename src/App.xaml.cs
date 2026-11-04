@@ -45,12 +45,15 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        AccessibleTheme.Apply(Resources, SystemParameters.HighContrast, AccessibleTheme.UseLightTheme);
+        SystemParameters.StaticPropertyChanged += OnSystemAppearanceChanged;
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         var launchMinimized = e.Args.Any(arg => string.Equals(arg, "--minimized", StringComparison.OrdinalIgnoreCase));
 
         if (!_instanceGuard.TryAcquire())
         {
             _logger.Warn("Startup ownership: duplicate instance rejected.");
-            if (!launchMinimized)
+            if (!launchMinimized && !_instanceGuard.RequestActivation())
             {
                 System.Windows.MessageBox.Show(
                     "Windows Lossless Switcher is already running.",
@@ -64,6 +67,7 @@ public partial class App : Application
         }
 
         _logger.Info("Startup ownership: primary instance.");
+        _instanceGuard.ActivationRequested += OnActivationRequested;
         _logger.Info($"OS version: {Environment.OSVersion.Version} ({(Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit")}, {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}).");
 
         _settings = _settingsService.Load();
@@ -72,6 +76,7 @@ public partial class App : Application
         _viewModel.SelectedDeviceId = _settings.PinnedDeviceId;
         _viewModel.LaunchAtLogin = _settings.LaunchAtLogin;
         _viewModel.SwitchBitDepth = _settings.SwitchBitDepth;
+        _viewModel.RewindAfterFormatSwitch = _settings.RewindAfterFormatSwitch;
         _viewModel.PreferClosestSampleRateMultiple = _settings.PreferClosestSampleRateMultiple;
         _viewModel.DefaultBitDepth = _settings.DefaultBitDepth;
         _viewModel.EnableSwitchToasts = _settings.EnableSwitchToasts;
@@ -91,6 +96,8 @@ public partial class App : Application
         _viewModel.RestoreOriginalFormatRequested += OnRestoreOriginalFormatRequested;
         _viewModel.ClearFormatCacheRequested += OnClearFormatCacheRequested;
         _viewModel.OpenSettingsWindowRequested += ShowSettingsWindow;
+        _viewModel.SaveNativeFormatCorrectionRequested += OnSaveNativeFormatCorrection;
+        _viewModel.RemoveNativeFormatCorrectionRequested += OnRemoveNativeFormatCorrection;
 
         _trayIconHost = new TrayIconHost();
         _trayIconHost.OpenRequested += ShowMainWindow;
@@ -105,9 +112,9 @@ public partial class App : Application
         // 2. AppleMusicCatalogResolver is the authoritative test when cache misses — a confident
         //    catalog match yields the exact Apple Music format.
         // 3. When the catalog does not match (local files, or tracks it can't identify),
-        //    LocalDeviceMaxResolver applies the actual format read from the track's PlayCache file,
-        //    or the device's highest supported format when the file can't be read.
-        // 4. TierFallbackResolver is the terminal safety net when there is no usable device.
+        //    LocalDeviceMaxResolver reads the track's PlayCache file and selects a format supported
+        //    by the chosen output device, including a pinned device.
+        // 4. TierFallbackResolver marks the rate undetermined when no file format can be read.
         var audioEndpointController = new CoreAudioEndpointController();
         var formatCacheStore = new FormatCacheStore(_logger);
         _formatCacheStore = formatCacheStore;
@@ -129,7 +136,8 @@ public partial class App : Application
                 new LocalDeviceMaxResolver(
                     audioEndpointController,
                     new PlayCacheTrackFormatReader(_paths, _logger),
-                    _logger),
+                    _logger,
+                    () => DeviceTargetingPolicy.GetCurrentTargetDevice(_settings!, audioEndpointController)),
                 new TierFallbackResolver(_paths, _plistReader, _logger),
             ]);
 
@@ -193,8 +201,27 @@ public partial class App : Application
         _viewModel.RestoreOriginalFormatRequested -= OnRestoreOriginalFormatRequested;
         _viewModel.ClearFormatCacheRequested -= OnClearFormatCacheRequested;
         _viewModel.OpenSettingsWindowRequested -= ShowSettingsWindow;
+        _viewModel.SaveNativeFormatCorrectionRequested -= OnSaveNativeFormatCorrection;
+        _viewModel.RemoveNativeFormatCorrectionRequested -= OnRemoveNativeFormatCorrection;
+        SystemParameters.StaticPropertyChanged -= OnSystemAppearanceChanged;
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        _instanceGuard.ActivationRequested -= OnActivationRequested;
         _instanceGuard.Dispose();
         base.OnExit(e);
+    }
+
+    private void OnActivationRequested(object? sender, EventArgs e) => Dispatcher.BeginInvoke(ShowMainWindow);
+
+    private void OnSystemAppearanceChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SystemParameters.HighContrast))
+            Dispatcher.BeginInvoke(() => AccessibleTheme.Apply(Resources, SystemParameters.HighContrast, AccessibleTheme.UseLightTheme));
+    }
+
+    private void OnUserPreferenceChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs args)
+    {
+        if (!Dispatcher.HasShutdownStarted)
+            Dispatcher.BeginInvoke(() => AccessibleTheme.Apply(Resources, SystemParameters.HighContrast, AccessibleTheme.UseLightTheme));
     }
 
     private void OnCoordinatorStatusChanged(object? sender, SwitchingStatus status)
@@ -252,6 +279,30 @@ public partial class App : Application
         });
     }
 
+    private void OnSaveNativeFormatCorrection()
+    {
+        var track = _viewModel.CorrectionTrack;
+        if (_settings is null || track is null || _latestStatus?.Track?.UniqueKey != track.UniqueKey) return;
+        var correction = TrackFormatCorrection.FromTrack(track, _viewModel.NativeSampleRateHz, _viewModel.NativeBitDepth);
+        if (!correction.IsValid) return;
+        _settings.TrackFormatCorrections = _settings.TrackFormatCorrections
+            .Where(existing => existing is not null && !existing.Matches(track)).Append(correction).ToList();
+        _settingsService.Save(_settings);
+        _coordinator?.UpdateSettings(_settings);
+        _coordinator?.ReprocessTrack(track);
+    }
+
+    private void OnRemoveNativeFormatCorrection()
+    {
+        var track = _viewModel.CorrectionTrack;
+        if (_settings is null || track is null || _latestStatus?.Track?.UniqueKey != track.UniqueKey) return;
+        _settings.TrackFormatCorrections = _settings.TrackFormatCorrections
+            .Where(existing => existing is not null && !existing.Matches(track)).ToList();
+        _settingsService.Save(_settings);
+        _coordinator?.UpdateSettings(_settings);
+        _coordinator?.ReprocessTrack(track);
+    }
+
     private void OnFormatCacheUpdated(object? sender, FormatCacheUpdateEventArgs e)
     {
         Dispatcher.BeginInvoke(() =>
@@ -299,6 +350,7 @@ public partial class App : Application
             e.PropertyName is not nameof(MainWindowViewModel.SelectedDeviceId) &&
             e.PropertyName is not nameof(MainWindowViewModel.LaunchAtLogin) &&
             e.PropertyName is not nameof(MainWindowViewModel.SwitchBitDepth) &&
+            e.PropertyName is not nameof(MainWindowViewModel.RewindAfterFormatSwitch) &&
             e.PropertyName is not nameof(MainWindowViewModel.PreferClosestSampleRateMultiple) &&
             e.PropertyName is not nameof(MainWindowViewModel.DefaultBitDepth) &&
             e.PropertyName is not nameof(MainWindowViewModel.EnableSwitchToasts) &&
@@ -317,6 +369,7 @@ public partial class App : Application
         _settings.PinnedDeviceId = _viewModel.SelectedDeviceId;
         _settings.LaunchAtLogin = _viewModel.LaunchAtLogin;
         _settings.SwitchBitDepth = _viewModel.SwitchBitDepth;
+        _settings.RewindAfterFormatSwitch = _viewModel.RewindAfterFormatSwitch;
         _settings.PreferClosestSampleRateMultiple = _viewModel.PreferClosestSampleRateMultiple;
         _settings.DefaultBitDepth = _viewModel.DefaultBitDepth;
         _settings.EnableSwitchToasts = _viewModel.EnableSwitchToasts;

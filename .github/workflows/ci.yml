@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: dotnet test .\WindowsLosslessSwitcher.sln --configuration Release --no-build --verbosity normal
 
+      - name: Verify UI layouts and bindings
+        run: dotnet run --project .\tests\WindowsLosslessSwitcher.UiVerification\WindowsLosslessSwitcher.UiVerification.csproj --configuration Release
+
   package-smoke:
     needs: validate
     runs-on: windows-latest

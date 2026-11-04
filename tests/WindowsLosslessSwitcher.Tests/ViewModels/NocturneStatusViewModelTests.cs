@@ -31,6 +31,22 @@ public sealed class NocturneStatusViewModelTests
 
     // ── Phase derivation ──────────────────────────────────────────────────────
 
+    [Fact]
+    public void UpdateStatus_UndeterminedRateDoesNotClaimAFormatMatch()
+    {
+        var viewModel = new MainWindowViewModel();
+        var fallback = new ResolvedAudioFormat(44100, 24, ResolutionConfidence.Tier,
+            AudioFormatSource.TierFallback, "undetermined");
+        viewModel.UpdateStatus(Status("Resolver: Rate undetermined", Track(), fallback, new AudioFormatCandidate(96000, 24, 2)));
+
+        Assert.Equal("Undetermined", viewModel.RequestedFormatDisplayText);
+        Assert.Equal("Undetermined", viewModel.RequestedFormatText);
+        Assert.Contains("undetermined", viewModel.PhaseText);
+        Assert.DoesNotContain("matches", viewModel.PhaseText);
+        Assert.Equal("24-bit / 96 kHz", viewModel.AppliedFormatDisplayText);
+        Assert.Contains("undetermined", viewModel.ActivityLog[0].Text);
+    }
+
     [Theory]
     [InlineData("Resolver: Waiting for Apple Music", SwitchPhase.Idle)]
     [InlineData("Resolver: Detecting track", SwitchPhase.Detecting)]
@@ -73,7 +89,7 @@ public sealed class NocturneStatusViewModelTests
     public void BuildPhaseText_UsesDesignCopy()
     {
         Assert.Equal(
-            "Track change — output muted",
+            "Detecting track format…",
             MainWindowViewModel.BuildPhaseText(SwitchPhase.Detecting, Status("Resolver: Detecting track")));
         Assert.Equal(
             "No switch needed — format already matches",

@@ -58,6 +58,28 @@ public sealed class LocalDeviceMaxResolverTests
     }
 
     [Fact]
+    public async Task PinnedTarget_UsesPinnedDeviceCapabilitiesForLocalFile()
+    {
+        var endpoint = new StubEndpoint([Rate44_16], pinnedFormats: [Rate96_24]);
+        var reader = new StubFileFormatReader(new LocalTrackFileFormat(96000, 24, "cache.m4a", "ALAC"));
+        var settings = new AppSettings
+        {
+            DeviceSelectionMode = DeviceSelectionMode.PinnedDevice,
+            PinnedDeviceId = "pinned-device",
+        };
+        var logger = new DiagnosticsLogger(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        var resolver = new LocalDeviceMaxResolver(endpoint, reader, logger,
+            () => DeviceTargetingPolicy.GetCurrentTargetDevice(settings, endpoint));
+
+        var result = await resolver.ResolveAsync(CreateTrack(), CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(96000, result.SampleRateHz);
+        Assert.Equal(24, result.BitDepth);
+        Assert.Equal(["pinned-device"], endpoint.SupportedFormatQueries);
+    }
+
+    [Fact]
     public async Task FileDepthNotOfferedAtRate_UsesSmallestDepthThatContainsIt()
     {
         // A 16-bit file on a DAC that only offers 24/32 at the rate gets 24 (bit-perfect via
@@ -247,12 +269,24 @@ public sealed class LocalDeviceMaxResolverTests
             throwOnRead ? throw new IOException("file locked") : format;
     }
 
-    private sealed class StubEndpoint(IReadOnlyList<AudioFormatCandidate> supportedFormats, bool hasDefaultDevice = true)
+    private sealed class StubEndpoint(
+        IReadOnlyList<AudioFormatCandidate> supportedFormats,
+        bool hasDefaultDevice = true,
+        IReadOnlyList<AudioFormatCandidate>? pinnedFormats = null)
         : IAudioEndpointController
     {
         private static readonly AudioDeviceInfo Device = new("device-id", "Test DAC", true);
+        private static readonly AudioDeviceInfo PinnedDevice = new("pinned-device", "Pinned DAC", false);
 
-        public IReadOnlyList<AudioDeviceInfo> GetRenderDevices() => hasDefaultDevice ? [Device] : [];
+        public List<string> SupportedFormatQueries { get; } = [];
+
+        public IReadOnlyList<AudioDeviceInfo> GetRenderDevices() => (hasDefaultDevice, pinnedFormats is not null) switch
+        {
+            (true, true) => [Device, PinnedDevice],
+            (true, false) => [Device],
+            (false, true) => [PinnedDevice],
+            _ => [],
+        };
 
         public AudioDeviceInfo? GetDefaultRenderDevice() => hasDefaultDevice ? Device : null;
 
@@ -260,7 +294,11 @@ public sealed class LocalDeviceMaxResolverTests
 
         public AudioFormatCandidate? GetCurrentMixFormat(string deviceId) => GetCurrentDeviceFormat(deviceId);
 
-        public IReadOnlyList<AudioFormatCandidate> GetSupportedFormats(string deviceId, bool forceRefresh = false) => supportedFormats;
+        public IReadOnlyList<AudioFormatCandidate> GetSupportedFormats(string deviceId, bool forceRefresh = false)
+        {
+            SupportedFormatQueries.Add(deviceId);
+            return deviceId == PinnedDevice.Id && pinnedFormats is not null ? pinnedFormats : supportedFormats;
+        }
 
         public string? DescribeSupportedFormat(string deviceId, AudioFormatCandidate format) => format.DisplayName;
 

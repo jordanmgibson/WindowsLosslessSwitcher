@@ -229,6 +229,36 @@ public sealed class EndpointFormatSupportTests
         Assert.Equal("property store", result.VerificationSource);
     }
 
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(40, 2)]
+    [InlineData(120, 3)]
+    [InlineData(700, 5)]
+    public void AdaptiveVerification_ConfirmsFastAndSlowDrivers(int propagationMilliseconds, int expectedAttempts)
+    {
+        var target = new AudioFormatCandidate(96000, 24, 2);
+        var elapsed = TimeSpan.Zero;
+        var result = EndpointFormatSupport.VerifyTargetFormat(target, 5, TimeSpan.FromMilliseconds(200),
+            () => new DeviceFormatSnapshot(elapsed.TotalMilliseconds >= propagationMilliseconds ? target : null, null),
+            delay => elapsed += delay, CoreAudioEndpointController.GetVerificationRetryDelay);
+
+        Assert.True(result.Success);
+        Assert.Equal(expectedAttempts, result.Attempts);
+    }
+
+    [Fact]
+    public void AdaptiveVerification_PreservesFullDriverPropagationWindow()
+    {
+        var waits = new List<TimeSpan>();
+        var result = EndpointFormatSupport.VerifyTargetFormat(new AudioFormatCandidate(96000, 24, 2), 5,
+            TimeSpan.FromMilliseconds(200), () => new DeviceFormatSnapshot(null, null),
+            waits.Add, CoreAudioEndpointController.GetVerificationRetryDelay);
+
+        Assert.False(result.Success);
+        Assert.Equal(5, result.Attempts);
+        Assert.Equal(800, waits.Sum(delay => delay.TotalMilliseconds));
+    }
+
     private static byte[] Build24In32Blob(int sampleRate, int channels)
     {
         var blockAlign = channels * 4;

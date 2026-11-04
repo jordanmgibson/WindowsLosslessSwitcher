@@ -8,6 +8,31 @@ namespace WindowsLosslessSwitcher.Tests.ViewModels;
 public sealed class MainWindowViewModelTests
 {
     [Fact]
+    public void NativeCorrection_StatusRefreshPreservesDraftUntilNextTrack()
+    {
+        var viewModel = new MainWindowViewModel();
+        var track = new TrackSnapshot("AppleMusic.exe", null, "Song", "Artist", "Album", "test", DateTimeOffset.UtcNow);
+        var verified = new ResolvedAudioFormat(96000, 24, ResolutionConfidence.Exact, AudioFormatSource.UserVerified, "Native correction");
+        var status = new WindowsLosslessSwitcher.Services.SwitchingStatus("Resolver: Resolved", "DAC", track, verified, null, null);
+
+        viewModel.UpdateStatus(status);
+        Assert.Equal(96000, viewModel.NativeSampleRateHz);
+        viewModel.NativeSampleRateHz = 192000;
+        viewModel.NativeBitDepth = 16;
+
+        viewModel.UpdateStatus(status);
+        viewModel.UpdateStatus(status with { RequestedFormat = null });
+        viewModel.UpdateStatus(status);
+        Assert.Equal(192000, viewModel.NativeSampleRateHz);
+        Assert.Equal(16, viewModel.NativeBitDepth);
+
+        var nextTrack = track with { DetectedAtUtc = track.DetectedAtUtc.AddMinutes(1) };
+        viewModel.UpdateStatus(status with { Track = nextTrack });
+        Assert.Equal(96000, viewModel.NativeSampleRateHz);
+        Assert.Equal(24, viewModel.NativeBitDepth);
+    }
+
+    [Fact]
     public void ClearFormatCacheCommand_RaisesRequest()
     {
         var viewModel = new MainWindowViewModel();

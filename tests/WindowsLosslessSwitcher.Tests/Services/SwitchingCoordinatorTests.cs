@@ -18,8 +18,10 @@ public sealed class SwitchingCoordinatorTests
     // Recovery tests run the real 4 s restore-observation window plus nudge cycles (~13 s worst case).
     private static readonly TimeSpan RecoveryTimeout = TimeSpan.FromSeconds(30);
 
-    [Fact]
-    public async Task TrackChange_DoesNotPauseDuringResolutionAndLeavesTransportAloneWhenResolverFails()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TrackChange_MutesResolutionOnlyForIntroReplay_AndReleasesMuteOnFailure(bool replayIntro)
     {
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController();
@@ -28,13 +30,15 @@ public sealed class SwitchingCoordinatorTests
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
         var failedStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: Failed");
 
-        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        var settings = CreateSettings();
+        settings.RewindAfterFormatSwitch = replayIntro;
+        await coordinator.StartAsync(settings, CancellationToken.None);
 
         trackSource.RaiseTrackChanged(CreateTrack());
 
-        // Track-change handling mutes (when a target device is cached) but never pauses before
-        // resolution: Apple Music's render stream must keep spinning up for a clean switch later.
+        // Replay mode suppresses the preview before resolution; the renderer keeps running.
         await resolver.ResolveStarted.WaitAsync(DefaultTimeout);
+        Assert.Equal(replayIntro ? new[] { true } : [], audioEndpointController.MuteCalls);
         Assert.Equal(0, mediaTransportController.PauseCallCount);
         Assert.Equal(0, resolver.PauseCallCountWhenResolveStarted);
 
@@ -44,10 +48,36 @@ public sealed class SwitchingCoordinatorTests
         Assert.Equal("No format resolver returned a result.", finalStatus.FailureReason);
         Assert.Equal(0, mediaTransportController.PlayCallCount);
         Assert.Equal(0, audioEndpointController.TryApplyFormatCallCount);
+        Assert.Equal(replayIntro ? new[] { true, false } : [], audioEndpointController.MuteCalls);
     }
 
     [Fact]
-    public async Task TrackChange_WhenResolvedFormatIsAlreadyActive_DoesNotTouchTransport()
+    public async Task IntroRewind_WhenUserPausesAfterResume_DoesNotRunAnotherRecovery()
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat]) { MasterPeakValue = 0.01f };
+        // The first state read after play models a user pause, after the play command itself
+        // succeeded. It must be observed as user intent rather than as a dead renderer.
+        transport.PlayInvoked = () => transport.PlaybackStatusSequence.Enqueue(MediaTransportPlaybackStatus.Paused);
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat)));
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        var restored = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
+
+        tracks.RaiseTrackChanged(CreateTrack());
+        await restored.WaitAsync(DefaultTimeout);
+
+        Assert.Equal(1, transport.PlayCallCount);
+        Assert.Equal(1, transport.PauseCallCount);
+        Assert.Equal([TimeSpan.Zero], transport.SeekPositions);
+        Assert.Equal(0, transport.SkipNextCallCount);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TrackChange_WhenResolvedFormatIsAlreadyActive_DoesNotTouchTransport(bool replayIntro)
     {
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController();
@@ -56,16 +86,20 @@ public sealed class SwitchingCoordinatorTests
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
         var finalStatusTask = WaitForStatusAsync(coordinator, status => status.FailureReason == "Target format already active.");
 
-        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        var settings = CreateSettings();
+        settings.RewindAfterFormatSwitch = replayIntro;
+        await coordinator.StartAsync(settings, CancellationToken.None);
 
         trackSource.RaiseTrackChanged(CreateTrack());
 
         var finalStatus = await finalStatusTask.WaitAsync(DefaultTimeout);
+        Assert.Empty(audioEndpointController.MuteCalls);
         Assert.Equal("Resolver: CatalogManifest", finalStatus.ResolverStatusText);
         Assert.Equal(CurrentFormat, finalStatus.AppliedFormat);
         Assert.Equal(0, mediaTransportController.PauseCallCount);
         Assert.Equal(0, mediaTransportController.PlayCallCount);
         Assert.Equal(0, audioEndpointController.TryApplyFormatCallCount);
+        Assert.Empty(mediaTransportController.SeekPositions);
     }
 
     [Fact]
@@ -115,8 +149,9 @@ public sealed class SwitchingCoordinatorTests
         // timeline so the rebuild duration is not cut off the END of the track.
         Assert.Equal(1, mediaTransportController.PauseCallCount);
         Assert.Equal(1, mediaTransportController.PlayCallCount);
-        // No automatic track restart: a second transition right after the switch is the state a
-        // quick user skip turns into a wedged renderer (proven live).
+        Assert.Equal([TimeSpan.Zero], mediaTransportController.SeekPositions);
+        Assert.Equal(TimeSpan.Zero, mediaTransportController.TimelinePosition);
+        // Seek within the track; do not create a skip-previous track transition.
         Assert.Equal(0, mediaTransportController.SkipPreviousCallCount);
         Assert.Equal(1, audioEndpointController.TryApplyFormatCallCount);
     }
@@ -175,15 +210,14 @@ public sealed class SwitchingCoordinatorTests
         Assert.True(applied);
         Assert.True(finalStatus.WasFormatChanged);
         Assert.Equal(0, mediaTransportController.PlayCallCount); // the user's pause is respected
+        Assert.Empty(mediaTransportController.SeekPositions);
         Assert.Equal(0, mediaTransportController.SkipPreviousCallCount); // no restart while paused
     }
 
     [Fact]
-    public async Task TierFallback_WhenDeviceDiffers_AppliesTheTierFormatLikeAnyResolution()
+    public async Task TierFallback_WhenDeviceDiffers_KeepsDeviceAndReportsUndetermined()
     {
-        // The tier value derives from the user's Apple Music quality setting; applying it keeps
-        // the resolved and applied formats matched instead of leaving the device wherever the
-        // previous track happened to put it.
+        // A quality-tier guess must never cause an artificial rate change (#3/#4).
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController();
         var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, FallbackFormat])
@@ -192,18 +226,19 @@ public sealed class SwitchingCoordinatorTests
         };
         var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(FallbackFormat, AudioFormatSource.TierFallback)));
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
-        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
+        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: Rate undetermined");
 
         await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
 
         trackSource.RaiseTrackChanged(CreateTrack());
 
         var finalStatus = await finalStatusTask.WaitAsync(DefaultTimeout);
-        Assert.True(finalStatus.WasFormatChanged);
-        Assert.Equal(FallbackFormat, finalStatus.AppliedFormat); // resolved == applied
-        Assert.Equal(1, audioEndpointController.TryApplyFormatCallCount);
-        Assert.Equal(1, mediaTransportController.PauseCallCount); // schedule realign
-        Assert.Equal(1, mediaTransportController.PlayCallCount);
+        Assert.False(finalStatus.WasFormatChanged);
+        Assert.Equal(CurrentFormat, finalStatus.AppliedFormat);
+        Assert.Equal(0, audioEndpointController.TryApplyFormatCallCount);
+        Assert.Equal(0, mediaTransportController.PauseCallCount);
+        Assert.Equal(0, mediaTransportController.PlayCallCount);
+        Assert.Contains("undetermined", finalStatus.FailureReason);
     }
 
     [Fact]
@@ -214,14 +249,14 @@ public sealed class SwitchingCoordinatorTests
         var audioEndpointController = new TestAudioEndpointController(DefaultDevice, FallbackFormat, [CurrentFormat, FallbackFormat]);
         var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(FallbackFormat, AudioFormatSource.TierFallback)));
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
-        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.FailureReason == "Target format already active.");
+        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: Rate undetermined");
 
         await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
 
         trackSource.RaiseTrackChanged(CreateTrack());
 
         var finalStatus = await finalStatusTask.WaitAsync(DefaultTimeout);
-        Assert.Equal("Resolver: TierFallback", finalStatus.ResolverStatusText);
+        Assert.Equal("Resolver: Rate undetermined", finalStatus.ResolverStatusText);
         Assert.False(finalStatus.WasFormatChanged);
         Assert.Equal(FallbackFormat, finalStatus.AppliedFormat);
         Assert.Equal(0, mediaTransportController.PauseCallCount);
@@ -325,7 +360,7 @@ public sealed class SwitchingCoordinatorTests
     }
 
     [Fact]
-    public async Task TrackChange_WhenNotPlayingAndEndpointSilent_SwitchesWithoutPauseOrResume()
+    public async Task TrackChange_WhenPaused_DefersUntilResumeAndThenRestarts()
     {
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController
@@ -338,54 +373,60 @@ public sealed class SwitchingCoordinatorTests
         };
         var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat)));
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
-        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.WasFormatChanged);
+        var deferred = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: Deferred until playback");
 
         await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
 
         trackSource.RaiseTrackChanged(CreateTrack());
 
-        var finalStatus = await finalStatusTask.WaitAsync(DefaultTimeout);
-        Assert.True(finalStatus.WasFormatChanged);
-        Assert.Equal(LosslessFormat, finalStatus.AppliedFormat);
+        await deferred.WaitAsync(DefaultTimeout);
         Assert.Equal(0, mediaTransportController.PauseCallCount);
         Assert.Equal(0, mediaTransportController.PlayCallCount);
+        Assert.Equal(0, audioEndpointController.TryApplyFormatCallCount);
+        Assert.Empty(audioEndpointController.MuteCalls);
+        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.WasFormatChanged);
+        mediaTransportController.IsPlaying = true;
+        audioEndpointController.MasterPeakValue = 0.01f;
+        trackSource.RaisePlaybackResumed();
+        var finalStatus = await finalStatusTask.WaitAsync(DefaultTimeout);
+        Assert.Equal(LosslessFormat, finalStatus.AppliedFormat);
         Assert.Equal(1, audioEndpointController.TryApplyFormatCallCount);
+        Assert.Equal([TimeSpan.Zero], mediaTransportController.SeekPositions);
     }
 
     [Fact]
-    public async Task TrackChange_WhenNotPlayingButPeakShowsAudio_SwitchesLiveWithoutPause()
+    public async Task TrackChange_WhenPausedButPeakLingers_DefersWithoutOverridingPause()
     {
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController
         {
-            IsPlaying = false, // stale transport state: GSMTC says not playing…
+            IsPlaying = false,
         };
         var audioEndpointController = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
         {
-            // …but the endpoint shows audio flowing: the stream is live, so the live-switch path
-            // applies the format under it and waits for the agent's self-rebuild.
+            // Buffered peaks can linger after a user pause. Respect transport intent.
             MasterPeakValue = 0.05f,
             RenderSessionActiveProvider = () => true,
         };
         var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat)));
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
-        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
+        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: Deferred until playback");
 
         await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
 
         trackSource.RaiseTrackChanged(CreateTrack());
 
         var finalStatus = await finalStatusTask.WaitAsync(DefaultTimeout);
-        Assert.True(finalStatus.WasFormatChanged);
-        Assert.Equal(LosslessFormat, finalStatus.AppliedFormat);
+        Assert.False(finalStatus.WasFormatChanged);
+        Assert.Equal(CurrentFormat, finalStatus.AppliedFormat);
         Assert.Equal(0, mediaTransportController.PauseCallCount);
         Assert.Equal(0, mediaTransportController.PlayCallCount);
         Assert.Equal(0, mediaTransportController.SkipPreviousCallCount); // transport not playing — no restart
-        Assert.Equal(1, audioEndpointController.TryApplyFormatCallCount);
+        Assert.Equal(0, audioEndpointController.TryApplyFormatCallCount);
     }
 
     [Fact]
-    public async Task UserPausesDuringResolution_SwitchesSilentlyAndDoesNotAutoResume()
+    public async Task UserPausesDuringResolution_DefersAndDoesNotAutoResume()
     {
         var trackSource = new TestTrackSource();
         var mediaTransportController = new TestMediaTransportController();
@@ -393,24 +434,23 @@ public sealed class SwitchingCoordinatorTests
         {
             MasterPeakValue = 0f,
         };
-        // The user pauses while the resolver is running. The coordinator must still apply the
-        // format (silent switch) but must NOT play over the user's pause.
+        // The user pauses while resolving. Neither change the dormant stream nor resume it.
         var resolver = new DelegateResolver((_, _) =>
         {
             mediaTransportController.IsPlaying = false;
             return Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat));
         });
         await using var coordinator = CreateCoordinator(trackSource, mediaTransportController, audioEndpointController, resolver);
-        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.WasFormatChanged);
+        var finalStatusTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Resolver: Deferred until playback");
 
         await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
 
         trackSource.RaiseTrackChanged(CreateTrack());
 
         var finalStatus = await finalStatusTask.WaitAsync(DefaultTimeout);
-        Assert.True(finalStatus.WasFormatChanged);
-        Assert.Equal(LosslessFormat, finalStatus.AppliedFormat);
-        Assert.Equal(1, audioEndpointController.TryApplyFormatCallCount);
+        Assert.False(finalStatus.WasFormatChanged);
+        Assert.Equal(CurrentFormat, finalStatus.AppliedFormat);
+        Assert.Equal(0, audioEndpointController.TryApplyFormatCallCount);
         Assert.Equal(0, mediaTransportController.PauseCallCount);
         Assert.Equal(0, mediaTransportController.PlayCallCount); // user's pause is respected
         Assert.False(mediaTransportController.IsPlaying);
@@ -814,11 +854,11 @@ public sealed class SwitchingCoordinatorTests
 
         await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
 
-        // First track switches cleanly so the coordinator caches the target device — the
-        // instant mute only arms from the second track change on.
+        // First track discovers and mutes its endpoint; the second uses the cached target.
         trackSource.RaiseTrackChanged(CreateTrack());
         await firstRestored.WaitAsync(DefaultTimeout);
-        Assert.Empty(audioEndpointController.MuteCalls);
+        Assert.Equal([true, false], audioEndpointController.MuteCalls);
+        audioEndpointController.MuteCalls.Clear();
 
         // Second track: the renderer never starts, so its switch is skipped.
         streamAlive = false;
@@ -829,8 +869,7 @@ public sealed class SwitchingCoordinatorTests
         trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
         await skipStatus.WaitAsync(RecoveryTimeout);
 
-        // Muted on the track change, unmuted at the skip decision — and already unmuted by the
-        // time the recovery nudge paused, not only when processing ended.
+        // Intro replay may mute preparation, but a skipped switch must release it before recovery.
         Assert.Equal([true, false], audioEndpointController.MuteCalls);
         Assert.False(audioEndpointController.MasterMute);
         Assert.Equal(false, mutedWhenRecoveryPaused);
@@ -881,14 +920,14 @@ public sealed class SwitchingCoordinatorTests
         trackSource.RaiseTrackChanged(CreateTrack());
         await firstRestoredTask.WaitAsync(DefaultTimeout);
 
-        // No mute on the very first track: the coordinator has no cached target device yet.
-        Assert.Empty(audioEndpointController.MuteCalls);
+        Assert.Equal([true, false], audioEndpointController.MuteCalls);
+        audioEndpointController.MuteCalls.Clear();
 
         var secondRestoredTask = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
         trackSource.RaiseTrackChanged(CreateTrack("Second Track"));
 
         await secondRestoredTask.WaitAsync(DefaultTimeout);
-        // The second track is muted instantly on track change and unmuted when processing ends.
+        // Intro replay stays muted through lookup, stream startup, and the device change.
         Assert.Equal([true, false], audioEndpointController.MuteCalls);
         Assert.False(audioEndpointController.MasterMute);
     }
@@ -1149,6 +1188,257 @@ public sealed class SwitchingCoordinatorTests
         }
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task IntroRewind_RespectsSettingAndSeekRejection_AndUnmutesBeforePlay(bool enabled, bool seekAccepted)
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController { SeekResult = seekAccepted };
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            MasterPeakValue = 0.01f,
+        };
+        bool? mutedAtSeek = null;
+        bool? mutedAtPlay = null;
+        transport.SeekInvoked = () => mutedAtSeek = endpoint.MasterMute;
+        transport.PlayInvoked = () => mutedAtPlay = endpoint.MasterMute;
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat)));
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        var settings = CreateSettings();
+        settings.RewindAfterFormatSwitch = enabled;
+        await coordinator.StartAsync(settings, CancellationToken.None);
+        var restored = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
+
+        tracks.RaiseTrackChanged(CreateTrack());
+        await restored.WaitAsync(DefaultTimeout);
+
+        Assert.Equal(enabled ? 1 : 0, transport.ChangePlaybackPositionCallCount);
+        if (enabled) Assert.True(mutedAtSeek);
+        Assert.False(mutedAtPlay);
+        Assert.Equal(enabled && seekAccepted ? TimeSpan.Zero : TimeSpan.FromSeconds(12), transport.TimelinePosition);
+        Assert.Equal(0, transport.SkipPreviousCallCount);
+        Assert.Equal(0, transport.SkipNextCallCount);
+        Assert.True(transport.IsPlaying);
+    }
+
+    [Fact]
+    public async Task IntroRewind_WhenResumeNeedsRecovery_DoesNotSeekTwice()
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            MasterPeakValue = 0.01f,
+        };
+        transport.PlayInvoked = () => endpoint.MasterPeakValue = transport.PlayCallCount == 1 ? 0f : 0.01f;
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat)));
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        var restored = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
+
+        tracks.RaiseTrackChanged(CreateTrack());
+        await restored.WaitAsync(RecoveryTimeout);
+
+        Assert.Equal(2, transport.PlayCallCount);
+        Assert.Equal([TimeSpan.Zero], transport.SeekPositions);
+        Assert.False(endpoint.MasterMute);
+    }
+
+    [Fact]
+    public async Task IntroRewind_WhenSupersededDuringPause_TransfersPauseWithoutSeekingNewTrack()
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.PauseInvoked = () => paused.TrySetResult();
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            MasterPeakValue = 0.01f,
+        };
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat)));
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        tracks.RaiseTrackChanged(CreateTrack());
+        await paused.Task.WaitAsync(DefaultTimeout);
+        var successor = WaitForStatusAsync(coordinator, status => status.Track?.Title == "Successor" && status.FailureReason == "Target format already active.");
+
+        tracks.RaiseTrackChanged(CreateTrack("Successor"));
+        await successor.WaitAsync(DefaultTimeout);
+
+        Assert.Empty(transport.SeekPositions);
+        Assert.Equal(1, transport.PlayCallCount);
+        Assert.True(transport.IsPlaying);
+        Assert.False(endpoint.MasterMute);
+    }
+
+    [Fact]
+    public async Task IntroRewind_WhenDisposedDuringPause_ResumesBeforeDisposingCommandSession()
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.PauseInvoked = () => paused.TrySetResult();
+        bool? sourceDisposedAtPlay = null;
+        transport.PlayInvoked = () => sourceDisposedAtPlay = tracks.Disposed;
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat]) { MasterPeakValue = 0.01f };
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat)));
+        var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        tracks.RaiseTrackChanged(CreateTrack());
+        await paused.Task.WaitAsync(DefaultTimeout);
+
+        await coordinator.DisposeAsync();
+
+        Assert.False(sourceDisposedAtPlay);
+        Assert.True(tracks.Disposed);
+        Assert.True(transport.IsPlaying);
+        Assert.False(endpoint.MasterMute);
+        Assert.Empty(transport.SeekPositions);
+    }
+
+    [Fact]
+    public async Task NativeCorrection_TakesPriorityOverCachedWebResult()
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var endpoint = new TestAudioEndpointController(DefaultDevice, LosslessFormat, [FallbackFormat, LosslessFormat]);
+        var catalogCalls = 0;
+        var resolver = new DelegateResolver((_, _) => { catalogCalls++; return Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(FallbackFormat, AudioFormatSource.CachedCatalog)); });
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        var track = CreateTrack("Dirty Diana") with { Artist = "Michael Jackson", Album = "Number Ones" };
+        var settings = CreateSettings();
+        settings.TrackFormatCorrections = [TrackFormatCorrection.FromTrack(track, 96000, 24)];
+        await coordinator.StartAsync(settings, CancellationToken.None);
+        var completed = WaitForStatusAsync(coordinator, status => status.FailureReason == "Target format already active.");
+
+        tracks.RaiseTrackChanged(track);
+        var status = await completed.WaitAsync(DefaultTimeout);
+
+        Assert.Equal(0, catalogCalls);
+        Assert.Equal(96000, status.RequestedFormat!.SampleRateHz);
+        Assert.Equal(AudioFormatSource.UserVerified, status.RequestedFormat.Source);
+        Assert.Equal(LosslessFormat, status.AppliedFormat);
+    }
+
+    [Fact]
+    public async Task SavingNativeCorrection_ReprocessesCurrentTrackWithoutWaitingForTrackChange()
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var endpoint = new TestAudioEndpointController(DefaultDevice, FallbackFormat, [FallbackFormat, LosslessFormat]) { MasterPeakValue = 0.01f };
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(FallbackFormat, AudioFormatSource.CachedCatalog)));
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        var settings = CreateSettings();
+        var track = CreateTrack("Dirty Diana") with { Artist = "Michael Jackson", Album = "Number Ones" };
+        await coordinator.StartAsync(settings, CancellationToken.None);
+        var first = WaitForStatusAsync(coordinator, status => status.FailureReason == "Target format already active.");
+        tracks.RaiseTrackChanged(track);
+        await first.WaitAsync(DefaultTimeout);
+
+        settings.TrackFormatCorrections = [TrackFormatCorrection.FromTrack(track, 96000, 24)];
+        coordinator.UpdateSettings(settings);
+        var corrected = WaitForStatusAsync(coordinator, status => status.WasFormatChanged && status.RequestedFormat?.Source == AudioFormatSource.UserVerified);
+        coordinator.ReprocessTrack(track);
+        var final = await corrected.WaitAsync(DefaultTimeout);
+
+        Assert.Equal(LosslessFormat, final.AppliedFormat);
+        Assert.Equal(1, endpoint.TryApplyFormatCallCount);
+    }
+
+    [Theory]
+    [InlineData(DeviceSelectionMode.FollowDefault, true, true, 0)]
+    [InlineData(DeviceSelectionMode.FollowDefault, false, false, 0)]
+    [InlineData(DeviceSelectionMode.PinnedDevice, true, true, 1)]
+    [InlineData(DeviceSelectionMode.PinnedDevice, false, false, 1)]
+    public async Task TargetSelection_UsesDefaultFastPathAndPreservesMissingPinnedDevice(
+        DeviceSelectionMode mode, bool available, bool selected, int enumerations)
+    {
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat])
+        {
+            DefaultDeviceUnavailable = mode == DeviceSelectionMode.FollowDefault && !available,
+        };
+        await using var coordinator = CreateCoordinator(new TestTrackSource(), new TestMediaTransportController(),
+            endpoint, new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(null)));
+        var settings = CreateSettings();
+        settings.DeviceSelectionMode = mode;
+        settings.PinnedDeviceId = available ? DefaultDevice.Id : "disconnected-device";
+        coordinator.UpdateSettings(settings);
+
+        var current = coordinator.GetCurrentTargetDeviceFormat();
+
+        Assert.Equal(selected ? DefaultDevice.Id : null, current.DeviceId);
+        Assert.Equal(enumerations, endpoint.GetRenderDevicesCallCount);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task IntroReplay_MutesBeforeLookupAndStreamGate_ThenUnmutesBeforePlay(bool replayIntro)
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat, LosslessFormat])
+        {
+            MasterPeakValue = 0.01f,
+        };
+        bool? mutedAtLookup = null;
+        bool? mutedBeforeGate = null;
+        bool? mutedAtPlay = null;
+        var applied = false;
+        endpoint.ApplyInvoked = () => applied = true;
+        endpoint.RenderSessionActiveProvider = () =>
+        {
+            if (!applied) mutedBeforeGate = endpoint.MasterMute;
+            return true;
+        };
+        transport.PlayInvoked = () => mutedAtPlay = endpoint.MasterMute;
+        var resolver = new DelegateResolver((_, _) =>
+        {
+            mutedAtLookup = endpoint.MasterMute;
+            return Task.FromResult<ResolvedAudioFormat?>(CreateResolvedFormat(LosslessFormat));
+        });
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        var settings = CreateSettings();
+        settings.RewindAfterFormatSwitch = replayIntro;
+        await coordinator.StartAsync(settings, CancellationToken.None);
+        var restored = WaitForStatusAsync(coordinator, status => status.ResolverStatusText == "Switching: Playback restored");
+
+        tracks.RaiseTrackChanged(CreateTrack());
+        await restored.WaitAsync(DefaultTimeout);
+
+        Assert.False(mutedAtLookup); // synchronous result is inspected before deciding to mute
+        Assert.Equal(replayIntro, mutedBeforeGate);
+        Assert.False(mutedAtPlay);
+        Assert.Equal(replayIntro ? new[] { TimeSpan.Zero } : [], transport.SeekPositions);
+        Assert.Equal(0, endpoint.GetRenderDevicesCallCount);
+    }
+
+    [Fact]
+    public async Task Issue2_ConsecutiveCachedMatchingTracksNeverMuteOrRestart()
+    {
+        var tracks = new TestTrackSource();
+        var transport = new TestMediaTransportController();
+        var endpoint = new TestAudioEndpointController(DefaultDevice, CurrentFormat, [CurrentFormat]);
+        var resolver = new DelegateResolver((_, _) => Task.FromResult<ResolvedAudioFormat?>(
+            CreateResolvedFormat(CurrentFormat, AudioFormatSource.CachedCatalog)));
+        await using var coordinator = CreateCoordinator(tracks, transport, endpoint, resolver);
+        await coordinator.StartAsync(CreateSettings(), CancellationToken.None);
+        foreach (var title in new[] { "First", "Second" })
+        {
+            var complete = WaitForStatusAsync(coordinator, status => status.Track?.Title == title && status.FailureReason == "Target format already active.");
+            tracks.RaiseTrackChanged(CreateTrack(title));
+            await complete.WaitAsync(DefaultTimeout);
+        }
+
+        Assert.Empty(endpoint.MuteCalls);
+        Assert.Equal(0, endpoint.TryApplyFormatCallCount);
+        Assert.Equal(0, transport.PauseCallCount);
+        Assert.Equal(0, transport.PlayCallCount);
+        Assert.Empty(transport.SeekPositions);
+    }
+
     private static SwitchingCoordinator CreateCoordinator(
         TestTrackSource trackSource,
         TestMediaTransportController mediaTransportController,
@@ -1250,7 +1540,7 @@ public sealed class SwitchingCoordinatorTests
         new(
             format.SampleRateHz,
             format.BitDepth,
-            ResolutionConfidence.Exact,
+            source == AudioFormatSource.TierFallback ? ResolutionConfidence.Tier : ResolutionConfidence.Exact,
             source,
             $"{source}: {format.DisplayName}")
         {
@@ -1297,10 +1587,18 @@ public sealed class SwitchingCoordinatorTests
     private sealed class TestTrackSource : ITrackSource
     {
         public event EventHandler<TrackSnapshot>? TrackChanged;
+        public event EventHandler? PlaybackResumed;
+        public void RaisePlaybackResumed() => PlaybackResumed?.Invoke(this, EventArgs.Empty);
 
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public bool Disposed { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
 
         public void RaiseTrackChanged(TrackSnapshot track) => TrackChanged?.Invoke(this, track);
     }
@@ -1399,10 +1697,17 @@ public sealed class SwitchingCoordinatorTests
 
         public int ChangePlaybackPositionCallCount { get; private set; }
 
+        public bool SeekResult { get; set; } = true;
+        public Action? SeekInvoked { get; set; }
+        public List<TimeSpan> SeekPositions { get; } = [];
+
         public Task<bool> TryChangePlaybackPositionAsync(TimeSpan position, CancellationToken cancellationToken)
         {
             ChangePlaybackPositionCallCount++;
-            return Task.FromResult(true);
+            SeekPositions.Add(position);
+            SeekInvoked?.Invoke();
+            if (SeekResult) TimelinePosition = position;
+            return Task.FromResult(SeekResult);
         }
 
         public int SkipPreviousCallCount { get; private set; }
@@ -1462,9 +1767,17 @@ public sealed class SwitchingCoordinatorTests
 
         public int IsProcessSessionActiveCallCount { get; private set; }
 
-        public IReadOnlyList<AudioDeviceInfo> GetRenderDevices() => [_defaultDevice];
+        public int GetRenderDevicesCallCount { get; private set; }
 
-        public AudioDeviceInfo? GetDefaultRenderDevice() => _defaultDevice;
+        public bool DefaultDeviceUnavailable { get; set; }
+
+        public IReadOnlyList<AudioDeviceInfo> GetRenderDevices()
+        {
+            GetRenderDevicesCallCount++;
+            return [_defaultDevice];
+        }
+
+        public AudioDeviceInfo? GetDefaultRenderDevice() => DefaultDeviceUnavailable ? null : _defaultDevice;
 
         public AudioFormatCandidate? GetCurrentDeviceFormat(string deviceId) => CurrentDeviceFormat;
 

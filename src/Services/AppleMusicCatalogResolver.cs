@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
 using WindowsLosslessSwitcher.Abstractions;
@@ -406,7 +406,11 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
                 $"Catalog resolver query '{attempt.Name}' best candidate for {track.UniqueKey}: " +
                 $"{bestAttemptMatch.Value.Title} / {bestAttemptMatch.Value.Artist} (score={bestAttemptMatch.Value.Score}).");
 
-            if (bestAttemptMatch.Value.Score >= MinimumAcceptedScore)
+            // A same-title recording on another edition can carry a different master. When
+            // album metadata is available, let later album-specific queries improve a merely
+            // title/artist match before accepting it (issue #3). Retain it as a fallback.
+            if (bestAttemptMatch.Value.Score >= MinimumAcceptedScore &&
+                (string.IsNullOrWhiteSpace(track.Album) || bestAttemptMatch.Value.Score >= 160))
             {
                 return bestAttemptMatch;
             }
@@ -415,6 +419,11 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             {
                 bestMatch = bestAttemptMatch;
             }
+        }
+
+        if (bestMatch is { Score: >= MinimumAcceptedScore })
+        {
+            return bestMatch;
         }
 
         if (bestMatch is not null)
@@ -629,7 +638,9 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             return -1;
         }
 
-        if (normalizedExpected == normalizedActual)
+        var expectedCredits = NormalizeArtistCredits(expected);
+        var actualCredits = NormalizeArtistCredits(actual);
+        if (normalizedExpected == normalizedActual || expectedCredits.SetEquals(actualCredits))
         {
             return 50;
         }
@@ -640,9 +651,20 @@ public sealed class AppleMusicCatalogResolver : IFormatResolver
             return 35;
         }
 
-        return AppleMusicTrackMetadataNormalizer.SplitArtists(expected)
-            .Overlaps(AppleMusicTrackMetadataNormalizer.SplitArtists(actual)) ? 25 : -1;
+        return expectedCredits.Overlaps(actualCredits) ? 25 : -1;
     }
+
+    private static HashSet<string> NormalizeArtistCredits(string? artist) =>
+        AppleMusicTrackMetadataNormalizer.SplitArtists(artist)
+            .Select(credit => credit switch
+            {
+                // Verified stage-name equivalence, not general transliteration. Keep aliases
+                // scoped to complete artist credits so unrelated names cannot match by substring.
+                // Primary source: https://www.jvcmusic.co.jp/-/Profile/A027029.html
+                "苺りなはむ" => "ichigorinahamu",
+                _ => credit,
+            })
+            .ToHashSet(StringComparer.Ordinal);
 
     private static int ScoreAlbum(string? expected, string? actual)
     {
